@@ -87,7 +87,9 @@ class APIWorkerInterface():
 
 
     def send_job_results(self, job_data, results):
-        results['job_id'] = job_data['job_id']
+        for parameter in ['job_id', 'start_time', 'start_time_compute']:
+            results[parameter] = job_data[parameter]
+
         output_descriptions = job_data['output_descriptions']
         for output_name, output_description in output_descriptions.items():
             if output_description.get('type') == 'image':
