@@ -114,10 +114,12 @@ class APIWorkerInterface():
         return response
 
 
-    def convert_image_to_base64_string(self, image, image_format):   
-        with io.BytesIO() as buffer:
-            image.save(buffer, format=image_format)
-            image_64 = f'data:image/{image_format};base64,' + base64.b64encode(buffer.getvalue()).decode('utf-8')
+    def convert_image_to_base64_string(self, list_images, image_format):
+        image_64 = ''
+        for image in list_images:
+            with io.BytesIO() as buffer:
+                image.save(buffer, format=image_format)
+                image_64 += f'data:image/{image_format};base64,' + base64.b64encode(buffer.getvalue()).decode('utf-8')
         return image_64
 
     @staticmethod
