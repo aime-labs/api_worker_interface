@@ -92,6 +92,8 @@ class APIWorkerInterface():
 
         output_descriptions = job_data['output_descriptions']
         for output_name, output_description in output_descriptions.items():
+            if output_name in job_data:
+                results[output_name] = job_data[output_name]
             if output_description.get('type') == 'image_list':
                 if output_name in results:
                     results[output_name] = self.convert_image_to_base64_string(results[output_name], output_description.get('image_format', 'PNG'))
