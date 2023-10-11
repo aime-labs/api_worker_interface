@@ -92,7 +92,7 @@ class APIWorkerInterface():
 
         output_descriptions = job_data['output_descriptions']
         for output_name, output_description in output_descriptions.items():
-            if output_description.get('type') == 'image':
+            if output_description.get('type') == 'image_list':
                 if output_name in results:
                     results[output_name] = self.convert_image_to_base64_string(results[output_name], output_description.get('image_format', 'PNG'))
 
@@ -102,13 +102,12 @@ class APIWorkerInterface():
 
     def send_progress(self, job_data, progress, progress_data=None):
         payload = {'progress': progress, 'job_id': job_data['job_id']}
-        output_descriptions = job_data['output_descriptions']
+        progress_desciptions = job_data['progress_desciptions']
         if progress_data:
-            for output_name, output_description in output_descriptions.items():
-                if output_name == 'progress_data':
-                    if output_description.get('type') == 'image':
-                        progress_data[output_name] = self.convert_image_to_base64_string(progress_data[output_name], output_description.get('image_format', 'PNG'))
-            payload['progress_data'] = progress_data
+            for progress_parameter_name, progress_desciption in progress_desciptions.items():
+                if progress_desciption.get('type') == 'image_list':
+                    if progress_parameter_name in progress_data:
+                        payload[progress_parameter_name] = self.convert_image_to_base64_string(progress_data[progress_parameter_name], progress_desciptions.get('image_format', 'PNG'))
 
         response = self.__fetch('/worker_job_progress', payload)
         return response
