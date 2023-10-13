@@ -7,6 +7,7 @@ from multiprocessing import Barrier
 from multiprocessing.managers import SyncManager
 import io
 import base64
+from PIL.PngImagePlugin import PngInfo
 
 SYNC_MANAGER_BASE_PORT  =  10042
 SYNC_MANAGER_AUTH_KEY   = b"aime_api_worker"
@@ -96,7 +97,7 @@ class APIWorkerInterface():
                 results[output_name] = job_data[output_name]
             if output_description.get('type') == 'image_list':
                 if output_name in results:
-                    results[output_name] = self.convert_image_to_base64_string(results[output_name], output_description.get('image_format', 'PNG'))
+                    results[output_name] = self.convert_image_to_base64_string(results[output_name], output_description.get('image_format', 'PNG'), job_data)
 
         response = self.__fetch('/worker_job_result', results)
         return response
@@ -109,19 +110,41 @@ class APIWorkerInterface():
             for progress_parameter_name, progress_desciption in progress_desciptions.items():
                 if progress_desciption.get('type') == 'image_list':
                     if progress_parameter_name in progress_data:
-                        payload[progress_parameter_name] = self.convert_image_to_base64_string(progress_data[progress_parameter_name], progress_desciptions.get('image_format', 'PNG'))
+                        payload[progress_parameter_name] = self.convert_image_to_base64_string(
+                            progress_data[progress_parameter_name], 
+                            progress_desciptions.get('image_format', 'PNG'), 
+                            job_data                                                           )
 
         response = self.__fetch('/worker_job_progress', payload)
         return response
 
 
-    def convert_image_to_base64_string(self, list_images, image_format):
+    def convert_image_to_base64_string(self, list_images, image_format, job_data):
         image_64 = ''
         for image in list_images:
             with io.BytesIO() as buffer:
-                image.save(buffer, format=image_format)
+                if image_format == 'PNG':
+                    png_metadata = self.get_pnginfo_metadata(job_data)
+                    image.save(buffer, format=image_format, pnginfo=png_metadata)
+                else:
+                    image.save(buffer, format=image_format)
+                
                 image_64 += f'data:image/{image_format};base64,' + base64.b64encode(buffer.getvalue()).decode('utf-8')
         return image_64
+
+
+    def get_pnginfo_metadata(self, job_data):
+        image_metadata_choice = [
+            'prompt', 'negative_prompt', 'seed', 'base_steps', 'refine_steps', 'scale', 
+            'aesthetic_score', 'negative_aesthetic_score', 'img2img_strength', 'base_sampler', 
+            'refine_sampler', 'base_discretization', 'refine_discretization'
+                          ]
+        metadata = PngInfo()
+        for parameter in image_metadata_choice:
+            metadata.add_text(parameter, str(job_data.get(parameter)))
+        metadata.add_test('Comment', 'Generated with AIME ML API')
+        
+        return metadata
 
     @staticmethod
     def check_periodically_if_server_online(api_server):
