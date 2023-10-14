@@ -93,10 +93,15 @@ class APIWorkerInterface():
 
         output_descriptions = job_data['output_descriptions']
         for output_name, output_description in output_descriptions.items():
-            # convert types if necessary            
-            if output_description.get('type') == 'image_list':
-                if output_name in results:
-                    results[output_name] = self.convert_image_to_base64_string(results[output_name], output_description.get('image_format', 'PNG'), job_data)
+            # convert output types to a string representation
+            if output_name in results:
+                output_type = output_description.get('type') 
+                if output_type == 'image':
+                    results[output_name] = self.convert_image_to_base64_string(
+                        results[output_name], output_description.get('image_format', 'PNG'), job_data)
+                elif output_type == 'image_list':
+                    results[output_name] = self.convert_image_list_to_base64_string(
+                        results[output_name], output_description.get('image_format', 'PNG'), job_data)
 
         response = self.__fetch('/worker_job_result', results)
         return response
@@ -104,31 +109,40 @@ class APIWorkerInterface():
 
     def send_progress(self, job_data, progress, progress_data=None):
         payload = {'progress': progress, 'job_id': job_data['job_id']}
-        progress_desciptions = job_data['progress_desciptions']
+        progress_descriptions = job_data['progress_desciptions']
         if progress_data:
-            # convert types if necessary
-            for output_name, output_desciption in progress_desciptions.items():
-                if output_desciption.get('type') == 'image_list':
-                    if output_name in progress_data:
+            # convert output types to a string representation
+            for output_name, output_description in progress_descriptions.items():
+                if output_name in progress_data:
+                    output_type = output_description.get('type') 
+                    if output_type == 'image':
                         progress_data[output_name] = self.convert_image_to_base64_string(
-                            progress_data[output_name], 
-                            progress_desciptions.get('image_format', 'PNG'), job_data)
+                            progress_data[output_name], progress_desciptions.get('image_format', 'PNG'), job_data)
+                    elif output_type == 'image_list':
+                        progress_data[output_name] = self.convert_image_list_to_base64_string(
+                            progress_data[output_name], progress_desciptions.get('image_format', 'PNG'), job_data)
+
             payload['progress_data'] = progress_data
         response = self.__fetch('/worker_job_progress', payload)
         return response
 
 
-    def convert_image_to_base64_string(self, list_images, image_format, job_data):
+    def convert_image_to_base64_string(self, image, image_format, job_data):
         image_64 = ''
-        for image in list_images:
-            with io.BytesIO() as buffer:
-                if image_format == 'PNG':
-                    png_metadata = self.get_pnginfo_metadata(job_data)
-                    image.save(buffer, format=image_format, pnginfo=png_metadata)
-                else:
-                    image.save(buffer, format=image_format)
-                
-                image_64 += f'data:image/{image_format};base64,' + base64.b64encode(buffer.getvalue()).decode('utf-8')
+        with io.BytesIO() as buffer:
+            if image_format == 'PNG':
+                png_metadata = self.get_pnginfo_metadata(job_data)
+                image.save(buffer, format=image_format, pnginfo=png_metadata)
+            else:
+                image.save(buffer, format=image_format)
+            
+            image_64 = f'data:image/{image_format};base64,' + base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return image_64
+
+    def convert_image_list_to_base64_string(self, list_images, image_format, job_data):
+        image_64 = ''
+        for image in list_images:            
+            image_64 += convert_image_list_to_base64_string(image, image_format, job_data)
         return image_64
 
 
