@@ -155,7 +155,7 @@ class APIWorkerInterface():
         metadata = PngInfo()
         for parameter in image_metadata_choice:
             metadata.add_text(parameter, str(job_data.get(parameter)))
-        metadata.add_test('Comment', 'Generated with AIME ML API')
+        metadata.add_text('Comment', 'Generated with AIME ML API')
         
         return metadata
 
