@@ -109,7 +109,7 @@ class APIWorkerInterface():
 
     def send_progress(self, job_data, progress, progress_data=None):
         payload = {'progress': progress, 'job_id': job_data['job_id']}
-        progress_descriptions = job_data['progress_desciptions']
+        progress_descriptions = job_data['progress_descriptions']
         if progress_data:
             # convert output types to a string representation
             for output_name, output_description in progress_descriptions.items():
@@ -117,10 +117,10 @@ class APIWorkerInterface():
                     output_type = output_description.get('type') 
                     if output_type == 'image':
                         progress_data[output_name] = self.convert_image_to_base64_string(
-                            progress_data[output_name], progress_desciptions.get('image_format', 'PNG'), job_data)
+                            progress_data[output_name], progress_descriptions.get('image_format', 'PNG'), job_data)
                     elif output_type == 'image_list':
                         progress_data[output_name] = self.convert_image_list_to_base64_string(
-                            progress_data[output_name], progress_desciptions.get('image_format', 'PNG'), job_data)
+                            progress_data[output_name], progress_descriptions.get('image_format', 'PNG'), job_data)
 
             payload['progress_data'] = progress_data
         response = self.__fetch('/worker_job_progress', payload)
