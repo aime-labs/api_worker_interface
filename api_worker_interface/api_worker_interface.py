@@ -142,7 +142,7 @@ class APIWorkerInterface():
     def convert_image_list_to_base64_string(self, list_images, image_format, job_data):
         image_64 = ''
         for image in list_images:            
-            image_64 += convert_image_list_to_base64_string(image, image_format, job_data)
+            image_64 += self.convert_image_to_base64_string(image, image_format, job_data)
         return image_64
 
 
