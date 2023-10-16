@@ -93,6 +93,9 @@ class APIWorkerInterface():
 
         output_descriptions = job_data['output_descriptions']
         for output_name, output_description in output_descriptions.items():
+            if output_name in job_data:
+                results[output_name] = job_data[output_name]
+
             # convert output types to a string representation
             if output_name in results:
                 output_type = output_description.get('type') 
