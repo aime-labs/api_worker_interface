@@ -8,6 +8,7 @@ from multiprocessing.managers import SyncManager
 import io
 import base64
 from PIL.PngImagePlugin import PngInfo
+from multiprocessing.dummy import Pool
 
 SYNC_MANAGER_BASE_PORT  =  10042
 SYNC_MANAGER_AUTH_KEY   = b"aime_api_worker"
@@ -93,9 +94,6 @@ class APIWorkerInterface():
 
         output_descriptions = job_data['output_descriptions']
         for output_name, output_description in output_descriptions.items():
-            if output_name in job_data:
-                results[output_name] = job_data[output_name]
-
             # convert output types to a string representation
             if output_name in results:
                 output_type = output_description.get('type') 
@@ -126,7 +124,8 @@ class APIWorkerInterface():
                             progress_data[output_name], progress_descriptions.get('image_format', 'PNG'), job_data)
 
             payload['progress_data'] = progress_data
-        response = self.__fetch('/worker_job_progress', payload)
+            
+        response = self.__fetch_async('/worker_job_progress', payload)
         return response
 
 
@@ -179,6 +178,12 @@ class APIWorkerInterface():
         return requests.post(self.api_server + url, json=json)
 
 
+
+    def __fetch_async(self, url, json):
+        pool = Pool()
+        pool.apply_async(self.__fetch, args=[url, json])
+
+
 class ProgressCallback():
     def __init__(self, api_worker):
         self.api_worker = api_worker
@@ -186,3 +191,4 @@ class ProgressCallback():
 
     def send_progress_to_api_server(self, progress, progress_data=None):
         self.api_worker.send_progress(self.job_data, progress, progress_data)
+
