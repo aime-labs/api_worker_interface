@@ -33,6 +33,7 @@ class APIWorkerInterface():
         self.rank = rank
         self.job_type = job_type
         self.auth_key = auth_key
+        self.progress_data_received = False
         MyManager.register("barrier", APIWorkerInterface.get_barrier)
         APIWorkerInterface.manager = MyManager(("127.0.0.1", SYNC_MANAGER_BASE_PORT + gpu_id), authkey=SYNC_MANAGER_AUTH_KEY)
         if world_size > 1:
@@ -183,8 +184,10 @@ class APIWorkerInterface():
 
     def __fetch_async(self, url, json):
         pool = Pool()
-        pool.apply_async(self.__fetch, args=[url, json])
+        pool.apply_async(self.__fetch, args=[url, json], callback=self.request_finished_callback)
 
+    def request_finished_callback(self, result):
+        self.progress_data_received = True
 
 class ProgressCallback():
     def __init__(self, api_worker):
