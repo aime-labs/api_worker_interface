@@ -92,10 +92,9 @@ class APIWorkerInterface():
     def send_job_results(self, job_data, results):
         for parameter in ['job_id', 'start_time', 'start_time_compute']:
             results[parameter] = job_data[parameter]
-
         output_descriptions = job_data['output_descriptions']
         for output_name, output_description in output_descriptions.items():
-            if output_name in job_data:
+            if output_name in job_data and output_name not in results:
                 results[output_name] = job_data[output_name]
             # convert output types to a string representation
             if output_name in results:
@@ -126,7 +125,7 @@ class APIWorkerInterface():
                         progress_data[output_name] = self.convert_image_list_to_base64_string(
                             progress_data[output_name], progress_descriptions.get('image_format', 'PNG'), job_data)
 
-            payload['progress_data'] = progress_data
+        payload['progress_data'] = progress_data
             
         response = self.__fetch_async('/worker_job_progress', payload)
         return response
