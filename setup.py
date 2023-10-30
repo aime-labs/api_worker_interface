@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='api worker interface',
-      version='0.2.2',
+      version='0.2.3',
       author='Carlo',
       author_email='carlo@aime.info',
       packages=['api_worker_interface'],

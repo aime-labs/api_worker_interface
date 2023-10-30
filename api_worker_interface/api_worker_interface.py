@@ -33,10 +33,11 @@ class APIWorkerInterface():
         self.rank = rank
         self.job_type = job_type
         self.auth_key = auth_key
-        self.progress_data_received = False
-        MyManager.register("barrier", APIWorkerInterface.get_barrier)
-        APIWorkerInterface.manager = MyManager(("127.0.0.1", SYNC_MANAGER_BASE_PORT + gpu_id), authkey=SYNC_MANAGER_AUTH_KEY)
+        self.progress_data_received = True
+
         if world_size > 1:
+            MyManager.register("barrier", APIWorkerInterface.get_barrier)
+            APIWorkerInterface.manager = MyManager(("127.0.0.1", SYNC_MANAGER_BASE_PORT + gpu_id), authkey=SYNC_MANAGER_AUTH_KEY)
             # multi GPU synchronization required
             if rank == 0:
                 APIWorkerInterface.barrier = Barrier(world_size)
@@ -126,7 +127,7 @@ class APIWorkerInterface():
                             progress_data[output_name], progress_descriptions.get('image_format', 'PNG'), job_data)
 
         payload['progress_data'] = progress_data
-            
+        self.progress_data_received = False
         response = self.__fetch_async('/worker_job_progress', payload)
         return response
 
