@@ -106,8 +106,11 @@ class APIWorkerInterface():
                 elif output_type == 'image_list':
                     results[output_name] = self.convert_image_list_to_base64_string(
                         results[output_name], output_description.get('image_format', 'PNG'), job_data)
-
-        response = self.__fetch('/worker_job_result', results)
+        try:
+            response = self.__fetch('/worker_job_result', results)
+        except requests.exceptions.ConnectionError:
+            print('Server not reachable')
+            return
         return response
 
 
