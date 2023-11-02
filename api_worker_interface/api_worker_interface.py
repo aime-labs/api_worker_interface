@@ -26,14 +26,16 @@ class APIWorkerInterface():
     def get_barrier():
         return APIWorkerInterface.barrier
 
-    def __init__(self, api_server, job_type, auth_key, gpu_id=0, world_size=1, rank=0):
+    def __init__(self, api_server, job_type, auth_key, gpu_id=0, world_size=1, rank=0, gpu_name=None):
         self.api_server = api_server
         self.world_size = world_size
-        self.worker_name = self.__make_worker_name(gpu_id)
+        self.gpu_name = gpu_name
         self.rank = rank
         self.job_type = job_type
         self.auth_key = auth_key
+        self.worker_name = self.__make_worker_name(gpu_id)
         self.progress_data_received = True
+        
 
         if world_size > 1:
             MyManager.register("barrier", APIWorkerInterface.get_barrier)
@@ -47,12 +49,16 @@ class APIWorkerInterface():
                 APIWorkerInterface.manager.connect()
                 APIWorkerInterface.barrier = APIWorkerInterface.manager.barrier()
 
+
     def __make_worker_name(self, gpu_id):
-        world_size = int(os.environ.get("WORLD_SIZE", -1))
         worker_name = socket.gethostname()
-        for id in range(world_size):
-            worker_name += f'_GPU{id+gpu_id}'
+        for id in range(self.world_size):
+            if self.gpu_name:
+                worker_name += f'_{self.gpu_name}_{id+gpu_id}'
+            else:
+                worker_name += f'_GPU{id+gpu_id}'
         return worker_name
+
 
     def job_request(self):
         job_data = None
@@ -91,7 +97,7 @@ class APIWorkerInterface():
 
 
     def send_job_results(self, job_data, results):
-        for parameter in ['job_id', 'start_time', 'start_time_compute']:
+        for parameter in ['job_id', 'start_time', 'start_time_compute', 'auth']:
             results[parameter] = job_data[parameter]
         output_descriptions = job_data['output_descriptions']
         for output_name, output_description in output_descriptions.items():
