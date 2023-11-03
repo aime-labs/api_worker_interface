@@ -98,7 +98,7 @@ class APIWorkerInterface():
 
     def send_job_results(self, job_data, results):
         for parameter in ['job_id', 'start_time', 'start_time_compute', 'auth']:
-            results[parameter] = job_data[parameter]
+            results[parameter] = job_data.get(parameter)
         output_descriptions = job_data['output_descriptions']
         for output_name, output_description in output_descriptions.items():
             if output_name in job_data and output_name not in results:
