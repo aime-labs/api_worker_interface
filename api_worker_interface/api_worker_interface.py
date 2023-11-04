@@ -13,6 +13,12 @@ from multiprocessing.dummy import Pool
 SYNC_MANAGER_BASE_PORT  =  10042
 SYNC_MANAGER_AUTH_KEY   = b"aime_api_worker"
 
+DEFAULT_IMAGE_METADATA = [
+    'prompt', 'negative_prompt', 'seed', 'base_steps', 'refine_steps', 'scale', 
+    'aesthetic_score', 'negative_aesthetic_score', 'img2img_strength', 'base_sampler', 
+    'refine_sampler', 'base_discretization', 'refine_discretization'
+                          ]
+
 class MyManager(SyncManager):
     pass
 
@@ -28,7 +34,7 @@ class APIWorkerInterface():
     def get_barrier():
         return APIWorkerInterface.barrier
 
-    def __init__(self, api_server, job_type, auth_key, gpu_id=0, world_size=1, rank=0, gpu_name=None):
+    def __init__(self, api_server, job_type, auth_key, gpu_id=0, world_size=1, rank=0, gpu_name=None, progress_received_callback=None, image_metadata_params=DEFAULT_IMAGE_METADATA):
         """Constructor
 
         Args:
@@ -47,11 +53,14 @@ class APIWorkerInterface():
         self.world_size = world_size
         self.rank = rank
         self.gpu_name = gpu_name
+        self.progress_received_callback = progress_received_callback
+        self.image_metadata_params = image_metadata_params
         self.progress_data_received = True
         self.worker_name = self.__make_worker_name()
         self.__init_manager_and_barrier()
+        self.first_request = True
         
-                
+        
     def __init_manager_and_barrier(self):
         """Register barrier in MyManager, initialize MyManager and assign them to APIWorkerInterface.barrier and APIWorkerInterface.manager
         """        
@@ -79,8 +88,9 @@ class APIWorkerInterface():
             if self.gpu_name:
                 worker_name += f'_{self.gpu_name}_{id+self.gpu_id}'
             else:
-                worker_name += f'_GPU{id+gpu_id}'
+                worker_name += f'_GPU{id+self.gpu_id}'
         return worker_name
+
 
 
     def job_request(self):
@@ -98,7 +108,7 @@ class APIWorkerInterface():
                 try:
                     response = self.__fetch('/worker_job_request', request)
                 except requests.exceptions.ConnectionError:
-                    APIWorkerInterface.check_periodically_if_server_online(self.api_server)
+                    APIWorkerInterface.check_periodically_if_server_online()
                     continue
                 
                 if response.status_code == 200:
@@ -111,7 +121,7 @@ class APIWorkerInterface():
                     elif cmd == 'warning':
                         print("! API server responded with warning: " + str(job_data.get('msg', "unknown")))
                         counter += 1
-                        APIWorkerInterface.check_periodically_if_server_online(self.api_server)
+                        APIWorkerInterface.check_periodically_if_server_online()
                         if counter > 3:
                             exit("API server responded with warning: " + str(job_data.get('msg', "unknown")))
                     else:
@@ -133,27 +143,18 @@ class APIWorkerInterface():
 
         Returns:
             Response: Response to the worker 
-        """        
-        for parameter in ['job_id', 'start_time', 'start_time_compute', 'auth']:
-            results[parameter] = job_data.get(parameter)
-        output_descriptions = job_data['output_descriptions']
-        for output_name, output_description in output_descriptions.items():
-            if output_name in job_data and output_name not in results:
-                results[output_name] = job_data[output_name]
-            # convert output types to a string representation
-            if output_name in results:
-                output_type = output_description.get('type') 
-                if output_type == 'image':
-                    results[output_name] = self.convert_image_to_base64_string(
-                        results[output_name], output_description.get('image_format', 'PNG'), job_data)
-                elif output_type == 'image_list':
-                    results[output_name] = self.convert_image_list_to_base64_string(
-                        results[output_name], output_description.get('image_format', 'PNG'), job_data)
-        try:
-            response = self.__fetch('/worker_job_result', results)
-        except requests.exceptions.ConnectionError:
-            print('Server not reachable')
-            return
+        """
+        response = None
+        if self.rank == 0:        
+            for parameter in ['job_id', 'start_time', 'start_time_compute', 'auth']:
+                results[parameter] = job_data.get(parameter)
+
+            results = self.__convert_output_types_to_string_representation(job_data, results, True)
+            try:
+                response = self.__fetch('/worker_job_result', results)
+            except requests.exceptions.ConnectionError:
+                print('Connection to server lost')
+                return
         return response
 
 
@@ -167,28 +168,48 @@ class APIWorkerInterface():
 
         Returns:
             Response: Response to the worker
-        """        
-        payload = {'progress': progress, 'job_id': job_data['job_id']}
-        progress_descriptions = job_data['progress_descriptions']
-        if progress_data:
-            # convert output types to a string representation
-            for output_name, output_description in progress_descriptions.items():
-                if output_name in progress_data:
-                    output_type = output_description.get('type') 
-                    if output_type == 'image':
-                        progress_data[output_name] = self.convert_image_to_base64_string(
-                            progress_data[output_name], progress_descriptions.get('image_format', 'PNG'), job_data)
-                    elif output_type == 'image_list':
-                        progress_data[output_name] = self.convert_image_list_to_base64_string(
-                            progress_data[output_name], progress_descriptions.get('image_format', 'PNG'), job_data)
-
-        payload['progress_data'] = progress_data
-        self.progress_data_received = False
-        response = self.__fetch_async('/worker_job_progress', payload)
+        """
+        response = None
+        if self.rank == 0:        
+            payload = {'progress': progress, 'job_id': job_data['job_id']}
+            payload['progress_data'] = self.__convert_output_types_to_string_representation(job_data, progress_data, False)
+            self.progress_data_received = False
+            response = self.__fetch_async('/worker_job_progress', payload)
         return response
 
 
-    def convert_image_to_base64_string(self, image, image_format, job_data):
+    def __convert_output_types_to_string_representation(self, job_data, output, finished):
+        """Process/convert job progress information and data while worker is computing and send it to API Server on route /worker_job_progress
+
+        Args:
+            job_data (dict): worker [INPUT] parameters 
+            output (dict): current progress (f.i. percent or number of generated tokens)
+            finished (bool): Set True if end result, False if progress_data
+
+        Returns:
+            dict: Response to the worker
+        """
+
+        
+        if output:
+            mode = 'output' if finished else 'progress'
+            descriptions = job_data.get(f'{mode}_descriptions')
+            for output_name, output_description in descriptions.items():
+                if output_name in output:
+                    output_type = output_description.get('type') 
+                    if output_type == 'image':
+                        output[output_name] = self.__convert_image_to_base64_string(
+                            output[output_name], output_description.get('image_format', 'PNG'), job_data)
+                    elif output_type == 'image_list':
+                        output[output_name] = self.__convert_image_list_to_base64_string(
+                            output[output_name], output_description.get('image_format', 'PNG'), job_data)
+                if finished:
+                    if output_name in job_data and output_name not in output:
+                        output[output_name] = job_data[output_name]
+        return output
+
+
+    def __convert_image_to_base64_string(self, image, image_format, job_data):
         """Converts given PIL image to base64 string with given image_format and image metadata parsed from given job_data.
 
         Args:
@@ -202,15 +223,15 @@ class APIWorkerInterface():
         image_64 = ''
         with io.BytesIO() as buffer:
             if image_format == 'PNG':
-                png_metadata = self.get_pnginfo_metadata(job_data)
-                image.save(buffer, format=image_format, pnginfo=png_metadata)
+                image.save(buffer, format=image_format, pnginfo=self.get_pnginfo_metadata(job_data))
             else:
                 image.save(buffer, format=image_format)
             
             image_64 = f'data:image/{image_format};base64,' + base64.b64encode(buffer.getvalue()).decode('utf-8')
         return image_64
 
-    def convert_image_list_to_base64_string(self, list_images, image_format, job_data):
+
+    def __convert_image_list_to_base64_string(self, list_images, image_format, job_data):
         """Converts given list of PIL images to base64 string with given image_format and image metadata parsed from given job_data.
 
         Args:
@@ -223,7 +244,7 @@ class APIWorkerInterface():
         """        
         image_64 = ''
         for image in list_images:            
-            image_64 += self.convert_image_to_base64_string(image, image_format, job_data)
+            image_64 += self.__convert_image_to_base64_string(image, image_format, job_data)
         return image_64
 
 
@@ -236,38 +257,36 @@ class APIWorkerInterface():
         Returns:
             PIL.PngImagePlugin.PngInfo: PngInfo Object with metadata for PNG images
         """        
-        image_metadata_choice = [
-            'prompt', 'negative_prompt', 'seed', 'base_steps', 'refine_steps', 'scale', 
-            'aesthetic_score', 'negative_aesthetic_score', 'img2img_strength', 'base_sampler', 
-            'refine_sampler', 'base_discretization', 'refine_discretization'
-                          ]
         metadata = PngInfo()
-        for parameter in image_metadata_choice:
+        for parameter in self.image_metadata_params:
             metadata.add_text(parameter, str(job_data.get(parameter)))
         metadata.add_text('Comment', 'Generated with AIME ML API')
         
         return metadata
 
     @staticmethod
-    def check_periodically_if_server_online(api_server):
-        """Checking periodically if server is online by post request on route /worker_check_server_status
+    def check_periodically_if_server_online(interval_seconds=2):
+        """Checking periodically every <interval_seconds> if server is online by post request on route /worker_check_server_status
 
         Args:
-            api_server (str): Address of API server
+            interval_seconds (int): Interval in seconds to update check if server is online
+
 
         Returns:
             bool: True if server is available again
         """        
         server_offline = True
+        counter = 0
         while server_offline:
             try:
-                response = requests.post(api_server + '/worker_check_server_status')
+                response = requests.post(self.api_server + '/worker_check_server_status')
                 server_offline = False
-                print('Server back online')
+                print('\nServer back online')
                 return True
             except requests.exceptions.ConnectionError:
-                print(f'API Server {api_server} not available. Trying to reconnect...')
-                time.sleep(2)
+                print(f'API Server {self.api_server} not available. Trying to reconnect...({counter})', end='\r')
+                counter += 1
+                time.sleep(interval_seconds)
 
     def __fetch(self, route, json):
         """Send post request on given route on API server with given arguments
@@ -291,15 +310,19 @@ class APIWorkerInterface():
             json (dict): Arguments for post request
         """        
         pool = Pool()
-        pool.apply_async(self.__fetch, args=[route, json], callback=self.request_finished_callback)
+        pool.apply_async(self.__fetch, args=[route, json], callback=self.__request_finished_callback)
 
-    def request_finished_callback(self, result):
-        """Is called when API server received progress information from worker
+
+    def __request_finished_callback(self, result):
+        """Is called when API server received progress information from worker. Sets progress_data_received = True 
 
         Args:
-            result (Response): Respone of self.__fetch()
-        """        
+            result (Response): Response of self.__fetch()
+        """   
         self.progress_data_received = True
+        if self.progress_received_callback:
+            self.progress_received_callback()
+
 
 class ProgressCallback():
     def __init__(self, api_worker):
