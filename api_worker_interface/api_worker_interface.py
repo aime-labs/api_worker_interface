@@ -103,11 +103,6 @@ class APIWorkerInterface():
             do_deep_learning_worker_calculation(job_data, callback.result_callback, callback.progress_callback, ...)
         
     """    
-
-
-    def get_barrier(self):
-        return self.barrier
-
     def __init__(self, api_server, job_type, auth_key, gpu_id=0, world_size=1, rank=0, gpu_name=None, progress_received_callback=None, progress_error_callback=None, image_metadata_params=DEFAULT_IMAGE_METADATA):
         f"""Constructor
         Args:
@@ -138,40 +133,6 @@ class APIWorkerInterface():
         self.current_job_data = None
         self.worker_start = True
         self.async_check_server_connection()
-
-
-    def __init_manager_and_barrier(self):
-        """Register barrier in MyManager, initialize MyManager and assign them to APIWorkerInterface.barrier and APIWorkerInterface.manager
-        """
-        manager, barrier = None, None
-        if self.world_size > 1:
-            MyManager.register("barrier", self.get_barrier)
-            manager = MyManager(("127.0.0.1", SYNC_MANAGER_BASE_PORT + self.gpu_id), authkey=SYNC_MANAGER_AUTH_KEY)
-            # multi GPU synchronization required
-            if self.rank == 0:
-                barrier = Barrier(world_size)
-                manager.start()
-            else:
-                time.sleep(2)   # manager has to be started first to connect
-                manager.connect()
-                barrier = manager.barrier()    
-        return manager, barrier
-
-
-    def __make_worker_name(self):
-        """Make a name for the worker based on worker hostname gpu name and gpu id: 
-
-        Returns:
-            str: name of the worker like <hostname>_<gpu_name>_<gpu_id> if gpu_name is given, , else <hostname>_GPU_<gpu_id>
-        """        
-        worker_name = socket.gethostname()
-        for id in range(self.world_size):
-            if self.gpu_name:
-                worker_name += f'_{self.gpu_name}_{id+self.gpu_id}'
-            else:
-                worker_name += f'_GPU{id+self.gpu_id}'
-        return worker_name
-
 
 
     def job_request(self):
@@ -251,7 +212,40 @@ class APIWorkerInterface():
             payload = {'progress': progress, 'job_id': self.current_job_data['job_id']}
             payload['progress_data'] = self.__prepare_output(progress_data, False)
             _ = self.__fetch_async('/worker_job_progress', payload)
-            
+
+
+    def __init_manager_and_barrier(self):
+        """Register barrier in MyManager, initialize MyManager and assign them to APIWorkerInterface.barrier and APIWorkerInterface.manager
+        """
+        manager, barrier = None, None
+        if self.world_size > 1:
+            MyManager.register("barrier", self.__get_barrier)
+            manager = MyManager(("127.0.0.1", SYNC_MANAGER_BASE_PORT + self.gpu_id), authkey=SYNC_MANAGER_AUTH_KEY)
+            # multi GPU synchronization required
+            if self.rank == 0:
+                barrier = Barrier(world_size)
+                manager.start()
+            else:
+                time.sleep(2)   # manager has to be started first to connect
+                manager.connect()
+                barrier = manager.barrier()    
+        return manager, barrier
+
+
+    def __make_worker_name(self):
+        """Make a name for the worker based on worker hostname gpu name and gpu id: 
+
+        Returns:
+            str: name of the worker like <hostname>_<gpu_name>_<gpu_id> if gpu_name is given, , else <hostname>_GPU_<gpu_id>
+        """        
+        worker_name = socket.gethostname()
+        for id in range(self.world_size):
+            if self.gpu_name:
+                worker_name += f'_{self.gpu_name}_{id+self.gpu_id}'
+            else:
+                worker_name += f'_GPU{id+self.gpu_id}'
+        return worker_name
+
 
     def __convert_output_types_to_string_representation(self, output_data, output_name, output_description):
         """Converts parameters output data from type 'image' and 'image_list' to base64 strings. 
@@ -375,52 +369,6 @@ class APIWorkerInterface():
                 print(f'Connection to API Server {self.api_server} offline for {duration_being_offline}. Trying to reconnect... ', end='\r')
                 time.sleep(interval_seconds)
 
-    def __fetch(self, route, json=None):
-        """Send post request on given route on API server with given arguments
-
-        Args:
-            route (str): Route on API server for post request
-            json (dict, optional): Arguments for post request
-
-        Returns:
-            Response: post request response
-        """        
-        return requests.post(self.api_server + route, json=json)
-
-
-
-    def __fetch_async(self, route, json=None):
-        """Send non-blocking post request on given route on API server with given arguments. After success request callback is called.
-
-        Args:
-            route (str): Route on API server for post request, f.i. '/worker_job_progress'
-            json (dict, optional): Arguments for post request
-        """        
-        pool = Pool()
-        self.progress_data_received = False
-        pool.apply_async(self.__fetch, args=[route, json], callback=self.__async_fetch_callback, error_callback=self.__async_fetch_error_callback)
-
-
-
-
-    def __async_fetch_callback(self, response):
-        """Is called when API server sent a response from __fetch_async. 
-        Sets progress_data_received = True and calls progress_received_callback, if given to ApiWorkerInterface
-
-        Args:
-            response (requests.models.Response): Http response from API server, 
-            Example_response.json() : 
-                API Server received data without problems:          {'cmd': 'ok'} 
-                An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
-                API Server received data received with a warning:   {'cmd': 'warning', 'msg': <warning message>}
-        """
-        self.progress_data_received = True     
-        if self.worker_start:
-            self.__print_server_status(response)
-            self.worker_start = False
-        elif self.progress_received_callback:
-            self.progress_received_callback(response)
-
 
     def __print_server_status(self, response):
         """_summary_
@@ -450,6 +398,51 @@ class APIWorkerInterface():
         print(output_str)
 
 
+    def __fetch(self, route, json=None):
+        """Send post request on given route on API server with given arguments
+
+        Args:
+            route (str): Route on API server for post request
+            json (dict, optional): Arguments for post request
+
+        Returns:
+            Response: post request response
+        """        
+        return requests.post(self.api_server + route, json=json)
+
+
+
+    def __fetch_async(self, route, json=None):
+        """Send non-blocking post request on given route on API server with given arguments. After success request callback is called.
+
+        Args:
+            route (str): Route on API server for post request, f.i. '/worker_job_progress'
+            json (dict, optional): Arguments for post request
+        """        
+        pool = Pool()
+        self.progress_data_received = False
+        pool.apply_async(self.__fetch, args=[route, json], callback=self.__async_fetch_callback, error_callback=self.__async_fetch_error_callback)
+
+
+    def __async_fetch_callback(self, response):
+        """Is called when API server sent a response from __fetch_async. 
+        Sets progress_data_received = True and calls progress_received_callback, if given to ApiWorkerInterface
+
+        Args:
+            response (requests.models.Response): Http response from API server, 
+            Example_response.json() : 
+                API Server received data without problems:          {'cmd': 'ok'} 
+                An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
+                API Server received data received with a warning:   {'cmd': 'warning', 'msg': <warning message>}
+        """
+        self.progress_data_received = True     
+        if self.worker_start:
+            self.__print_server_status(response)
+            self.worker_start = False
+        elif self.progress_received_callback:
+            self.progress_received_callback(response)
+
+
     def __async_fetch_error_callback(self, response):
         """Is called when API server received progress data from worker. 
         Sets progress_data_received = True and calls progress_received_callback, if given to ApiWorkerInterface
@@ -463,3 +456,7 @@ class APIWorkerInterface():
         else:
             if self.progress_received_error_callback:
                 self.progress_received_error_callback(response)
+
+
+    def __get_barrier(self):
+        return self.barrier
