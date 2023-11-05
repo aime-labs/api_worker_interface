@@ -176,7 +176,7 @@ class APIWorkerInterface():
         return job_data
 
 
-    def send_job_results(self, results):
+    def send_job_results(self, results, job_data=None):
         """Process/convert job results and send it to API Server on route /worker_job_result
 
         Args:
@@ -190,6 +190,8 @@ class APIWorkerInterface():
                 An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
                 API Server received data received with a warning:   {'cmd': 'warning', 'msg': <warning message>}
         """
+        if job_data:
+            self.current_job_data = job_data
         if self.rank == 0:        
             results = self.__prepare_output(results, True)
             try:
@@ -199,7 +201,7 @@ class APIWorkerInterface():
                 return
 
 
-    def send_progress(self, progress, progress_data=None):
+    def send_progress(self, progress, progress_data=None, job_data=None):
         """Processes/converts job progress information and data and sends it to API Server on route /worker_job_progress asynchronously to main thread.
             When Api server received progress data, self.progress_data_received is set to True. Use progress_received_callback for response
 
@@ -208,6 +210,8 @@ class APIWorkerInterface():
             progress_data (dict, optional): dictionary with progress_images or text while worker is computing. Defaults to None.
             Example progress data: {'progress_images': [<PIL.Image.Image>, <PIL.Image.Image>, ...]}
         """
+        if job_data:
+            self.current_job_data = job_data
         if self.rank == 0:        
             payload = {'progress': progress, 'job_id': self.current_job_data['job_id']}
             payload['progress_data'] = self.__prepare_output(progress_data, False)
