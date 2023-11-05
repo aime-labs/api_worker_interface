@@ -1,1 +1,1 @@
-from .api_worker_interface import APIWorkerInterface, ProgressCallback
+from .api_worker_interface import APIWorkerInterface
