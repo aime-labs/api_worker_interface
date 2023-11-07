@@ -25,7 +25,7 @@ DEFAULT_IMAGE_METADATA = [
                         ]
 
 
-class MyManager(SyncManager):
+class MyManager(SyncManager):    
     pass
 
 
@@ -175,6 +175,9 @@ class APIWorkerInterface():
                 request = { "auth": self.worker_name, "job_type": self.job_type, "auth_key": self.auth_key }
                 try:
                     response = self.__fetch('/worker_job_request', request)
+                    if response.status_code == 503:
+                        self.check_periodically_if_server_online()
+                        continue
                 except requests.exceptions.ConnectionError:
                     self.check_periodically_if_server_online()
                     continue
@@ -222,11 +225,22 @@ class APIWorkerInterface():
             self.current_job_data = job_data
         if self.rank == 0:        
             results = self.__prepare_output(results, True)
-            try:
-                return self.__fetch('/worker_job_result', results)
-            except requests.exceptions.ConnectionError:
-                print('Connection to server lost')
-                return
+            while True:
+                try:
+                    response =  self.__fetch('/worker_job_result', results)
+                    if response.status_code == 200:
+                        response_json = response.json()
+                        if response_json.get('cmd') == 'ok':
+                            return response
+                        else:
+                            print(f'{response_json.get("cmd")}: {response_json.get("msg")}')
+                        
+                    else:
+                        self.check_periodically_if_server_online()
+                        return
+                except requests.exceptions.ConnectionError:
+                    print('Connection to server lost')
+                    return
 
 
     def send_progress(self, progress, progress_data=None, job_data=None):
@@ -396,15 +410,28 @@ class APIWorkerInterface():
         while server_offline:
             try:
                 response = self.__fetch('/worker_check_server_status', {'auth_key': self.auth_key, 'job_type': self.job_type})
-                server_offline = False
-                print('\nServer back online')
-                return True
+                if response.status_code == 200:
+                    server_offline = False
+                    print('\nServer back online')
+                    return True
+                else:
+                    self.__print_server_offline_string(start_time, dot_string)
+                    time.sleep(interval_seconds)
             except requests.exceptions.ConnectionError:
-                duration_being_offline = datetime.now() - start_time
-                duration_being_offline = duration_being_offline - timedelta(microseconds=duration_being_offline.microseconds)
-                
-                print(f'Connection to API Server {self.api_server} offline for {duration_being_offline}. Trying to reconnect{next(dot_string)}', end='\r')
+                self.__print_server_offline_string(start_time, dot_string)
                 time.sleep(interval_seconds)
+
+
+    def __print_server_offline_string(self, start_time, dot_string):
+        """Prints information about the connection to the API server, if it's offline.
+
+        Args:
+            start_time (float): Time since the server is offline
+            dot_string (generator): Generator yielding string for dynamic print output f.i. moving dot
+        """        
+        duration_being_offline = datetime.now() - start_time
+        duration_being_offline = duration_being_offline - timedelta(microseconds=duration_being_offline.microseconds)        
+        print(f'Connection to API Server {self.api_server} offline for {duration_being_offline}. Trying to reconnect{next(dot_string)}', end='\r')
 
 
     def __dot_string_generator(self):
@@ -425,23 +452,27 @@ class APIWorkerInterface():
 
 
     def __print_server_status(self, response):
-        """Prints server status 
+        """Prints server status. Called at start of worker.
 
         Args:
             response (requests.models.Response or requests.exceptions.ConnectionError): 
 
         """        
         if type(response) is requests.models.Response:
-            response_json = response.json()
-            status = 'online'
-            
-            if response_json.get('msg'):
-                message_str = f'\nBut server responded with: {response_json.get("cmd")}: {response_json.get("msg")}'
-            else:
-                message_str = ''
+            if response.status_code == 200:
+                response_json = response.json()
+                status = 'online'
+                
+                if response_json.get('msg'):
+                    message_str = f'\nBut server responded with: {response_json.get("cmd")}: {response_json.get("msg")}'
+                else:
+                    message_str = ''
 
-            if not response_json.get('cmd'):
-                message_str += f'\nUnknown server response: {response_json}\n'
+                if not response_json.get('cmd'):
+                    message_str += f'\nUnknown server response: {response_json}\n'
+            elif response.status_code == 503:
+                status = 'offline'
+                message_str = ''
 
         elif type(response) is requests.exceptions.ConnectionError:
             message_str = ''#f'Error: {response}'
