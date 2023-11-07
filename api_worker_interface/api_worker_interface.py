@@ -270,7 +270,7 @@ class APIWorkerInterface():
             manager = MyManager(("127.0.0.1", SYNC_MANAGER_BASE_PORT + self.gpu_id), authkey=SYNC_MANAGER_AUTH_KEY)
             # multi GPU synchronization required
             if self.rank == 0:
-                barrier = Barrier(world_size)
+                barrier = Barrier(self.world_size)
                 manager.start()
             else:
                 time.sleep(2)   # manager has to be started first to connect
