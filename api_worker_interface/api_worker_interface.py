@@ -1,15 +1,18 @@
 
-import requests 
 import os
 import time
 from datetime import datetime, timedelta
-import socket
+
 from multiprocessing import Barrier
 from multiprocessing.managers import SyncManager
+from multiprocessing.dummy import Pool
+
+import requests 
+import socket
 import io
+
 import base64
 from PIL.PngImagePlugin import PngInfo
-from multiprocessing.dummy import Pool
 
 
 SYNC_MANAGER_BASE_PORT  =  10042
@@ -19,7 +22,8 @@ DEFAULT_IMAGE_METADATA = [
     'prompt', 'negative_prompt', 'seed', 'base_steps', 'refine_steps', 'scale', 
     'aesthetic_score', 'negative_aesthetic_score', 'img2img_strength', 'base_sampler', 
     'refine_sampler', 'base_discretization', 'refine_discretization'
-                          ]
+                        ]
+
 
 class MyManager(SyncManager):
     pass
@@ -36,8 +40,15 @@ class APIWorkerInterface():
         world_size (int, optional): Number of used GPUs the worker runs on. Defaults to 1.
         rank (int, optional): ID of current GPU if world_size > 1. Defaults to 0.
         gpu_name (str, optional): Name of GPU the worker runs on. Defaults to None.
-        progress_received_callback (function, optional): Callback function with http response as argument, called when API server received all data from send_progress(..). Defaults to None.
+        progress_received_callback (function, optional): Callback function with http response as argument, 
+            called when API server sent response to send_progress(..). Defaults to None.
+        progress_error_callback (function, optional): Callback function with requests.exceptions.ConnectionError as argument, 
+            called when API server didn't send response from send_progress(..). Defaults to None.
         image_metadata_params (list, optional): Parameters to add as metadata to images (Currently only 'PNG'). Defaults to {DEFAULT_IMAGE_METADATA}.
+
+    Attributes:
+        progress_data_received (bool): True, if API server sent response to send_progress(), False while progress data is being transmitted or error
+        current_job_data (dict): current job_data received from API server via job_request()
 
     Example usage simple:
         
@@ -102,8 +113,20 @@ class APIWorkerInterface():
             job_data = api_worker.job_request()
             do_deep_learning_worker_calculation(job_data, callback.result_callback, callback.progress_callback, ...)
         
-    """    
-    def __init__(self, api_server, job_type, auth_key, gpu_id=0, world_size=1, rank=0, gpu_name=None, progress_received_callback=None, progress_error_callback=None, image_metadata_params=DEFAULT_IMAGE_METADATA):
+    """
+    def __init__(
+        self, 
+        api_server, 
+        job_type, 
+        auth_key, 
+        gpu_id=0, 
+        world_size=1, 
+        rank=0, 
+        gpu_name=None, 
+        progress_received_callback=None, 
+        progress_error_callback=None, 
+        image_metadata_params=DEFAULT_IMAGE_METADATA
+        ):
         f"""Constructor
         Args:
             api_server (str): Address of API Server. Example: 'http://api.aime.team'.
@@ -113,7 +136,10 @@ class APIWorkerInterface():
             world_size (int, optional): Number of used GPUs the worker runs on. Defaults to 1.
             rank (int, optional): ID of current GPU if world_size > 1. Defaults to 0.
             gpu_name (str, optional): Name of GPU the worker runs on. Defaults to None.
-            progress_received_callback (function, optional): Callback function with http response as argument, called when API server received all data from send_progress(..). Defaults to None.
+            progress_received_callback (function, optional): Callback function with http response as argument, 
+                called when API server sent response from send_progress(..). Defaults to None.
+            progress_error_callback (function, optional): Callback function with requests.exceptions.ConnectionError as argument, 
+                called when API server didn't send response from send_progress(..). Defaults to None.
             image_metadata_params (list, optional): Parameters to add as metadata to images (Currently only 'PNG'). Defaults to {DEFAULT_IMAGE_METADATA}
 
         """        
@@ -130,7 +156,7 @@ class APIWorkerInterface():
         self.worker_name = self.__make_worker_name()
         self.manager, self.barrier = self.__init_manager_and_barrier()
         self.progress_data_received = True
-        self.current_job_data = None
+        self.current_job_data = dict()
         self.worker_start = True
         self.async_check_server_connection()
 
@@ -152,22 +178,24 @@ class APIWorkerInterface():
                 except requests.exceptions.ConnectionError:
                     self.check_periodically_if_server_online()
                     continue
-                
+                response_output_str = '! API server responded with {cmd}: {msg}'
                 if response.status_code == 200:
-                    job_data = response.json()   
+                    job_data = response.json()
+                    
                     cmd = job_data.get('cmd')
+                    msg = job_data.get('msg', 'unknown')
                     if cmd == 'job':
                         have_job = True
                     elif cmd == 'error':
-                        exit("! API server responded with error: " + str(job_data.get('msg', "unknown")))
+                        exit(response_output_str.format(cmd=cmd, msg=msg))
                     elif cmd == 'warning':
-                        print("! API server responded with warning: " + str(job_data.get('msg', "unknown")))
+                        print(response_output_str.format(cmd=cmd, msg=msg))
                         counter += 1
                         self.check_periodically_if_server_online()
                         if counter > 3:
-                            exit("API server responded with warning: " + str(job_data.get('msg', "unknown")))
+                            exit(response_output_str.format(cmd=cmd, msg=msg))
                     else:
-                        exit("! API server responded with unknown cmd: " + str(cmd))
+                        exit(response_output_str.format(cmd='unknown command', msg=cmd))
 
         if self.world_size > 1:
             # hold all GPU processes here until we have a new job                     
@@ -203,7 +231,8 @@ class APIWorkerInterface():
 
     def send_progress(self, progress, progress_data=None, job_data=None):
         """Processes/converts job progress information and data and sends it to API Server on route /worker_job_progress asynchronously to main thread.
-            When Api server received progress data, self.progress_data_received is set to True. Use progress_received_callback for response
+            When Api server received progress data, self.progress_data_received is set to True. 
+            Use progress_received_callback and progress_error_callback for response.
 
         Args:
             progress (int): current progress (f.i. percent or number of generated tokens)
@@ -305,7 +334,7 @@ class APIWorkerInterface():
 
         Returns:
             str: base64 string of image
-        """        
+        """
         with io.BytesIO() as buffer:
             if image_format == 'PNG':
                 image.save(buffer, format=image_format, pnginfo=self.get_pnginfo_metadata())
@@ -347,6 +376,8 @@ class APIWorkerInterface():
 
 
     def async_check_server_connection(self):
+        """Non blocking check of Api server status
+        """        
         self.__fetch_async('/worker_check_server_status', {'auth_key': self.auth_key, 'job_type': self.job_type})
 
 
@@ -361,6 +392,7 @@ class APIWorkerInterface():
         """        
         server_offline = True
         start_time = datetime.now()
+        dot_string = self.__dot_string_generator()
         while server_offline:
             try:
                 response = self.__fetch('/worker_check_server_status', {'auth_key': self.auth_key, 'job_type': self.job_type})
@@ -370,33 +402,57 @@ class APIWorkerInterface():
             except requests.exceptions.ConnectionError:
                 duration_being_offline = datetime.now() - start_time
                 duration_being_offline = duration_being_offline - timedelta(microseconds=duration_being_offline.microseconds)
-                print(f'Connection to API Server {self.api_server} offline for {duration_being_offline}. Trying to reconnect... ', end='\r')
+                
+                print(f'Connection to API Server {self.api_server} offline for {duration_being_offline}. Trying to reconnect{next(dot_string)}', end='\r')
                 time.sleep(interval_seconds)
 
 
+    def __dot_string_generator(self):
+        """Generator of string with moving dot for server status print output
+
+        Yields:
+            str: '.   ' with dot moving each call
+        """
+        dot_string = '.   '
+        counter = 0
+        while True:
+            if (counter//3) % 2 == 0:
+                dot_string = dot_string[-1] + dot_string[:-1]
+            else:
+                dot_string = dot_string[1:] + dot_string[0]
+            yield dot_string
+            counter += 1
+
+
     def __print_server_status(self, response):
-        """_summary_
+        """Prints server status 
 
         Args:
-            online (bool): _description_
-            response (requests.models.Response or requests.exceptions.ConnectionError or ): Expects response from API server. Also takes f API server connection is offline, 
+            response (requests.models.Response or requests.exceptions.ConnectionError): 
+
         """        
-        
-        if type(response) is not requests.exceptions.ConnectionError:
+        if type(response) is requests.models.Response:
             response_json = response.json()
             status = 'online'
+            
             if response_json.get('msg'):
-                message_str = f'But server responded with: {response_json.get("cmd")}: {response_json.get("msg")}'
+                message_str = f'\nBut server responded with: {response_json.get("cmd")}: {response_json.get("msg")}'
             else:
                 message_str = ''
 
-        else:
-            message_str = f'Error: {response}'
+            if not response_json.get('cmd'):
+                message_str += f'\nUnknown server response: {response_json}\n'
+
+        elif type(response) is requests.exceptions.ConnectionError:
+            message_str = ''#f'Error: {response}'
             status = 'offline'
+        else:
+            status = 'unknown'
+            message_str = f'\nUnknown server response: {response}\n'
 
         output_str = \
             '--------------------------------------------------------------\n\n' +\
-            f'           API server {self.api_server} {status}\n' +\
+            f'           API server {self.api_server} {status}' +\
             message_str +\
             '\n\n--------------------------------------------------------------'
         print(output_str)
@@ -410,14 +466,19 @@ class APIWorkerInterface():
             json (dict, optional): Arguments for post request
 
         Returns:
-            Response: post request response
+            Response: post request response from API server
+            Example_response.json() on routes /check_server_status and /worker_job_request: 
+                API Server received data without problems:          {'cmd': 'ok'} 
+                An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
+                API Server received data with a warning:   {'cmd': 'warning', 'msg': <warning message>}
         """        
         return requests.post(self.api_server + route, json=json)
 
 
 
     def __fetch_async(self, route, json=None):
-        """Send non-blocking post request on given route on API server with given arguments. After success request callback is called.
+        """Sends non-blocking post request on given route on API server with given arguments. Returns None. Response 
+        in __async_fetch_callback or __async_fetch_error_callback.
 
         Args:
             route (str): Route on API server for post request, f.i. '/worker_job_progress'
@@ -434,10 +495,10 @@ class APIWorkerInterface():
 
         Args:
             response (requests.models.Response): Http response from API server, 
-            Example_response.json() : 
+            Example_response.json() on routes /check_server_status and /worker_job_request: 
                 API Server received data without problems:          {'cmd': 'ok'} 
                 An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
-                API Server received data received with a warning:   {'cmd': 'warning', 'msg': <warning message>}
+                API Server received data with a warning:   {'cmd': 'warning', 'msg': <warning message>}
         """
         self.progress_data_received = True     
         if self.worker_start:
@@ -447,20 +508,25 @@ class APIWorkerInterface():
             self.progress_received_callback(response)
 
 
-    def __async_fetch_error_callback(self, response):
-        """Is called when API server received progress data from worker. 
+    def __async_fetch_error_callback(self, error):
+        """Is called when request didn't reach API server is offline. 
         Sets progress_data_received = True and calls progress_received_callback, if given to ApiWorkerInterface
 
         Args:
-            response (requests.exceptions.ConnectionError): Error , 
+            error (requests.exceptions.ConnectionError): requests.exceptions.ConnectionError
         """
         if self.worker_start:
-            self.__print_server_status(response)
+            self.__print_server_status(error)
             self.worker_start = False
         else:
-            if self.progress_received_error_callback:
-                self.progress_received_error_callback(response)
+            if self.progress_error_callback:
+                self.progress_error_callback(error)
 
 
     def __get_barrier(self):
+        """Returns barrier
+
+        Returns:
+            multiprocessing.Barrier: barrier for synchronizing GPU processes
+        """        
         return self.barrier
