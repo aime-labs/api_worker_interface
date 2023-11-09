@@ -127,7 +127,8 @@ class APIWorkerInterface():
         world_size=1, 
         rank=0, 
         gpu_name=None, 
-        image_metadata_params=DEFAULT_IMAGE_METADATA
+        image_metadata_params=DEFAULT_IMAGE_METADATA,
+        print_server_status = True
         ):
         f"""Constructor
         Args:
@@ -138,10 +139,7 @@ class APIWorkerInterface():
             world_size (int, optional): Number of used GPUs the worker runs on. Defaults to 1.
             rank (int, optional): ID of current GPU if world_size > 1. Defaults to 0.
             gpu_name (str, optional): Name of GPU the worker runs on. Defaults to None.
-            progress_received_callback (function, optional): Callback function with http response as argument, 
-                called when API server sent response from send_progress(..). Defaults to None.
-            progress_error_callback (function, optional): Callback function with requests.exceptions.ConnectionError as argument, 
-                called when API server didn't send response from send_progress(..). Defaults to None.
+
             image_metadata_params (list, optional): Parameters to add as metadata to images (Currently only 'PNG'). Defaults to {DEFAULT_IMAGE_METADATA}
 
         """        
@@ -152,15 +150,15 @@ class APIWorkerInterface():
         self.world_size = world_size
         self.rank = rank
         self.gpu_name = gpu_name
-        self.__callback = None
-        self.__error_callback = None
+        self.__custom_callback = None
+        self.__custom_error_callback = None
         self.image_metadata_params = image_metadata_params
         self.worker_name = self.__make_worker_name()
-        self.init_manager_and_barrier()
+        self.__init_manager_and_barrier()
         self.progress_data_received = True
         self.current_job_data = dict()
-        self.print_server_status = True
-        self.async_check_server_connection()
+        self.print_server_status = print_server_status
+        self.async_check_server_connection(terminal_output = print_server_status)
 
 
     def job_request(self):
@@ -241,7 +239,6 @@ class APIWorkerInterface():
                     return
 
 
-
     def send_progress(self, progress, progress_data=None, job_data=None, progress_received_callback=None, progress_error_callback=None):
         """Processes/converts job progress information and data and sends it to API Server on route /worker_job_progress asynchronously to main thread.
             When Api server received progress data, self.progress_data_received is set to True. 
@@ -250,6 +247,10 @@ class APIWorkerInterface():
         Args:
             progress (int): current progress (f.i. percent or number of generated tokens)
             progress_data (dict, optional): dictionary with progress_images or text while worker is computing. Defaults to None.
+            progress_received_callback (function, optional): Callback function with API server response as argument. 
+                Called when progress_data is received. Defaults to None.
+            progress_error_callback (function, optional): Callback function with requests.exceptions.ConnectionError or 
+            http response with status_code == 503 as argument. Called when API server replied with error. Defaults to None.
             Example progress data: {'progress_images': [<PIL.Image.Image>, <PIL.Image.Image>, ...]}
         """
         if job_data:
@@ -258,10 +259,75 @@ class APIWorkerInterface():
             payload = {'progress': progress, 'job_id': self.current_job_data['job_id']}
             payload['progress_data'] = self.__prepare_output(progress_data, False)
             self.progress_data_received = False
+
             _ = self.__fetch_async('/worker_job_progress', payload, progress_received_callback, progress_error_callback)
 
 
-    def init_manager_and_barrier(self):
+    def async_check_server_connection(self, check_server_callback=None, check_server_error_callback=None, terminal_output=True):
+        """Non blocking check of Api server status on route /worker_check_server_status using Pool().apply_async() from multiprocessing.dummy 
+
+        Args:
+            check_server_callback (callback, optional): Callback function with with API server response as argument. 
+                Called after a successful server check. Defaults to None.
+            check_server_error_callback (callback, optional): Callback function with requests.exceptions.ConnectionError as argument
+                Called when server replied with error. Defaults to None.
+            terminal_output (bool, optional): Prints server status to terminal if True. Defaults to True.
+        """        
+
+        
+        self.__custom_callback = check_server_callback if check_server_callback else None
+        self.__custom_error_callback = check_server_error_callback if check_server_error_callback else None
+
+        self.print_server_status = terminal_output
+        payload =  {'auth_key': self.auth_key, 'job_type': self.job_type}
+        self.__fetch_async('/worker_check_server_status', payload)
+
+
+    def check_periodically_if_server_online(self, interval_seconds=1):
+        f"""Checking periodically every interval_seconds={interval_seconds} if server is online by post requests on route /worker_check_server_status
+
+        Args:
+            interval_seconds (int): Interval in seconds to update check if server is online
+
+        Returns:
+            bool: True if server is available again
+        """
+        if self.rank == 0:
+            server_offline = True
+            start_time = datetime.now()
+            dot_string = self.__dot_string_generator()
+            while server_offline:
+                try:
+                    response = self.__fetch('/worker_check_server_status', {'auth_key': self.auth_key, 'job_type': self.job_type})
+                    if response.status_code == 200:
+                        server_offline = False
+                        print('\nServer back online')
+                        return True
+                    else:
+                        self.__print_server_offline_string(start_time, dot_string)
+                        time.sleep(interval_seconds)
+                except requests.exceptions.ConnectionError:
+                    self.__print_server_offline_string(start_time, dot_string)
+                    time.sleep(interval_seconds)
+
+
+    def get_pnginfo_metadata(self):
+        """Parses and returns image metadata from current_job_data.
+
+        Returns:
+            PIL.PngImagePlugin.PngInfo: PngInfo Object with metadata for PNG images
+        """        
+        metadata = PngInfo()
+        for parameter_name in self.image_metadata_params:
+            parameter = self.current_job_data.get(parameter_name)
+            if parameter:
+                metadata.add_text(parameter_name, str(parameter))
+        metadata.add_text('Comment', 'Generated with AIME ML API')
+        
+        return metadata
+
+
+    def __init_manager_and_barrier(self):
         """Register barrier in MyManager, initialize MyManager and assign them to APIWorkerInterface.barrier and APIWorkerInterface.manager
         """
         if self.world_size > 1:
@@ -275,8 +341,6 @@ class APIWorkerInterface():
                 time.sleep(2)   # manager has to be started first to connect
                 APIWorkerInterface.manager.connect()
                 APIWorkerInterface.barrier = APIWorkerInterface.manager.barrier()    
-
-
 
 
     def __make_worker_name(self):
@@ -325,7 +389,9 @@ class APIWorkerInterface():
         Returns:
             dict: worker [OUTPUT] parameter dictionary with data converted to base64 string
         """
+        
         if output_data:
+            output_data = output_data.copy()
             if finished:
                 for parameter in SERVER_PARAMETERS:
                     output_data[parameter] = self.current_job_data.get(parameter)
@@ -371,62 +437,6 @@ class APIWorkerInterface():
         """        
         image_64 = ''.join(self.__convert_image_to_base64_string(image, image_format) for image in list_images)
         return image_64
-
-
-    def get_pnginfo_metadata(self):
-        """Parses image metadata from current_job_data.
-
-        Returns:
-            PIL.PngImagePlugin.PngInfo: PngInfo Object with metadata for PNG images
-        """        
-        metadata = PngInfo()
-        for parameter_name in self.image_metadata_params:
-            parameter = self.current_job_data.get(parameter_name)
-            if parameter:
-                metadata.add_text(parameter_name, str(parameter))
-        metadata.add_text('Comment', 'Generated with AIME ML API')
-        
-        return metadata
-
-
-    def async_check_server_connection(self, check_server_callback=None, check_server_error_callback=None, terminal_output=True):
-        """Non blocking check of Api server status
-        """
-        
-        self.__custom_callback = check_server_callback if check_server_callback else None
-        self.__custom_error_callback = check_server_error_callback if check_server_error_callback else None
-
-        self.print_server_status = terminal_output
-        payload =  {'auth_key': self.auth_key, 'job_type': self.job_type}
-        self.__fetch_async('/worker_check_server_status', payload)
-
-
-    def check_periodically_if_server_online(self, interval_seconds=1):
-        """Checking periodically every <interval_seconds> if server is online by post request on route /worker_check_server_status
-
-        Args:
-            interval_seconds (int): Interval in seconds to update check if server is online
-
-        Returns:
-            bool: True if server is available again
-        """
-        if self.rank == 0:
-            server_offline = True
-            start_time = datetime.now()
-            dot_string = self.__dot_string_generator()
-            while server_offline:
-                try:
-                    response = self.__fetch('/worker_check_server_status', {'auth_key': self.auth_key, 'job_type': self.job_type})
-                    if response.status_code == 200:
-                        server_offline = False
-                        print('\nServer back online')
-                        return True
-                    else:
-                        self.__print_server_offline_string(start_time, dot_string)
-                        time.sleep(interval_seconds)
-                except requests.exceptions.ConnectionError:
-                    self.__print_server_offline_string(start_time, dot_string)
-                    time.sleep(interval_seconds)
 
 
     def __print_server_offline_string(self, start_time, dot_string):
@@ -482,7 +492,7 @@ class APIWorkerInterface():
                 message_str = ''
 
         elif type(response) is requests.exceptions.ConnectionError:
-            message_str = ''#f'Error: {response}'
+            message_str = ''
             status = 'offline'
         else:
             status = 'unknown'
@@ -525,10 +535,10 @@ class APIWorkerInterface():
         if callback:
             self.__custom_callback = callback
         if error_callback:
-            self.custom_error_callback = error_callback
+            self.__custom_error_callback = error_callback
         pool = Pool()
         pool.apply_async(self.__fetch, args=[route, json], callback=self.__async_fetch_callback, error_callback=self.__async_fetch_error_callback)
-
+        pool.close()
 
     def __async_fetch_callback(self, response):
         """Is called when API server sent a response from __fetch_async. 
@@ -561,5 +571,5 @@ class APIWorkerInterface():
             self.__print_server_status(error)
             self.print_server_status = False
         else:
-            if self.custom_error_callback:
-                self.custom_error_callback(error)
+            if self.__custom_error_callback:
+                self.__custom_error_callback(error)
