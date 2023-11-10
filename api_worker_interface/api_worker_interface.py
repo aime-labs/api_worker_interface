@@ -293,21 +293,23 @@ class APIWorkerInterface():
             bool: True if server is available again
         """
         if self.rank == 0:
-            server_offline = True
+            server_offline = False
             start_time = datetime.now()
             dot_string = self.__dot_string_generator()
-            while server_offline:
+            while True:
                 try:
                     response = self.__fetch('/worker_check_server_status', {'auth_key': self.auth_key, 'job_type': self.job_type})
                     if response.status_code == 200:
-                        server_offline = False
-                        print('\nServer back online')
+                        if server_offline:
+                            print('\nServer back online')
                         return True
                     else:
                         self.__print_server_offline_string(start_time, dot_string)
+                        server_offline = True
                         time.sleep(interval_seconds)
                 except requests.exceptions.ConnectionError:
                     self.__print_server_offline_string(start_time, dot_string)
+                    server_offline = True
                     time.sleep(interval_seconds)
 
 
