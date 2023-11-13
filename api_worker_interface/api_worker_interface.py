@@ -30,7 +30,7 @@ class MyManager(SyncManager):
 
 
 class APIWorkerInterface():
-    f"""Interface for deep learning models to communicate with AIME-ML-API
+    """Interface for deep learning models to communicate with AIME-ML-API
 
     Args:
         api_server (str): Address of API Server. Example: 'http://api.aime.team'.
@@ -44,74 +44,94 @@ class APIWorkerInterface():
             called when API server sent response to send_progress(..). Defaults to None.
         progress_error_callback (function, optional): Callback function with requests.exceptions.ConnectionError as argument, 
             called when API server didn't send response from send_progress(..). Defaults to None.
-        image_metadata_params (list, optional): Parameters to add as metadata to images (Currently only 'PNG'). Defaults to {DEFAULT_IMAGE_METADATA}.
+        image_metadata_params (list, optional): Parameters to add as metadata to images (Currently only 'PNG'). 
+            Defaults to ['prompt', 'negative_prompt', 'seed', ...].
 
     Attributes:
-        progress_data_received (bool): True, if API server sent response to send_progress(), False while progress data is being transmitted or error
-        current_job_data (dict): current job_data received from API server via job_request()
+        progress_data_received (bool): True, if API server sent response to send_progress(), 
+            False while progress data is being transmitted or if an error occured.
+        current_job_data (dict): current job_data received from API server via job_request().
 
-    Example usage simple:
-        
-        api_worker = APIWorkerInterface()
-        while True:
-            job_data = api_worker.job_request('http://api.aime.team', 'llama2_chat', <auth_key>)
-            output = do_deep_learning_worker_calculations(job_data, ...)
-            api_worker.send_job_results(output)
+    Examples:
+        Example usage simple:
 
+        .. highlight:: python
+        .. code-block:: python            
 
-    Example usage with progress:
+            from api_worker_interface import APIWorkerInterface
+                
+            api_worker = APIWorkerInterface('http://api.aime.team', 'llama2_chat', <auth_key>)
+            while True:
+                job_data = api_worker.job_request()
+                output = do_deep_learning_worker_calculations(job_data, ...)
+                api_worker.send_job_results(output)
 
-        api_worker = APIWorkerInterface('http://api.aime.team', 'llama2_chat', <auth_key>)
-        while True:
-            job_data = api_worker.job_request()
-            
-            for step in deep_learning_worker_calculation:
-                progress_in_percent = round(step*100/len(deep_learning_worker_calculation))
-                progress_data = do_deep_learning_worker_calculation_step(job_data, ...)
+        Example usage with progress:
+
+        .. highlight:: python
+        .. code-block:: python
+
+            from api_worker_interface import APIWorkerInterface           
+
+            api_worker = APIWorkerInterface('http://api.aime.team', 'llama2_chat', <auth_key>)
+            while True:
+                job_data = api_worker.job_request()
+                
+                for step in deep_learning_worker_calculation:
+                    progress_in_percent = round(step*100/len(deep_learning_worker_calculation))
+                    progress_data = do_deep_learning_worker_calculation_step(job_data, ...)
+                    if api_worker.progress_data_received:
+                        api_worker.send_progress(progress_in_percent, progress_data)
+                output = get_result()
+                api_worker.send_job_results(output)
+
+        Example usage with callback:
+
+        .. highlight:: python
+        .. code-block:: python
+
+            from api_worker_interface import APIWorkerInterface
+
+            def progress_callback(api_worker, progress, progress_data):
                 if api_worker.progress_data_received:
-                    api_worker.send_progress(progress_in_percent, progress_data)
-            output = get_result()
-            api_worker.send_job_results(output)
+                    api_worker.send_progress(progress, progress_data)
 
 
-    Example usage with callback:
-
-        def progress_callback(api_worker, progress, progress_data):
-            if api_worker.progress_data_received:
+            api_worker = APIWorkerInterface('http://api.aime.team', 'llama2_chat', <auth_key>)
+            callback = Callback(api_worker)
+            
+            while True:
+                job_data = api_worker.job_request()
+                output = do_deep_learning_worker_calculation(job_data, progress_callback, api_worker, ...)
                 api_worker.send_progress(progress, progress_data)
 
+        Example usage with callback class:
 
-        api_worker = APIWorkerInterface('http://api.aime.team', 'llama2_chat', <auth_key>)
-        callback = Callback(api_worker)
-        
-        while True:
-            job_data = api_worker.job_request()
-            output = do_deep_learning_worker_calculation(job_data, progress_callback, api_worker, ...)
-            api_worker.send_progress(progress, progress_data)
+        .. highlight:: python
+        .. code-block:: python
 
+            from api_worker_interface import APIWorkerInterface
 
-    Example usage with callback class:
+            class Callback():
 
-        class Callback():
-
-            def __init__(self, api_worker):
-                self.api_worker = api_worker
+                def __init__(self, api_worker):
+                    self.api_worker = api_worker
 
 
-            def progress_callback(self, progress, progress_data):
-                if self.api_worker.progress_data_received:
-                    self.api_worker.send_progress(progress, progress_data)
+                def progress_callback(self, progress, progress_data):
+                    if self.api_worker.progress_data_received:
+                        self.api_worker.send_progress(progress, progress_data)
+                
+                def result_callback(self, result):
+                    self.api_worker.send_job_results(result) 
+
+
+            api_worker = APIWorkerInterface('http://api.aime.team', 'llama2_chat', <auth_key>)
+            callback = Callback(api_worker)
             
-            def result_callback(self, result):
-                self.api_worker.send_job_results(result) 
-
-
-        api_worker = APIWorkerInterface('http://api.aime.team', 'llama2_chat', <auth_key>)
-        callback = Callback(api_worker)
-        
-        while True:
-            job_data = api_worker.job_request()
-            do_deep_learning_worker_calculation(job_data, callback.result_callback, callback.progress_callback, ...)
+            while True:
+                job_data = api_worker.job_request()
+                do_deep_learning_worker_calculation(job_data, callback.result_callback, callback.progress_callback, ...)
         
     """
 
@@ -130,7 +150,8 @@ class APIWorkerInterface():
         image_metadata_params=DEFAULT_IMAGE_METADATA,
         print_server_status = True
         ):
-        f"""Constructor
+        """Constructor
+
         Args:
             api_server (str): Address of API Server. Example: 'http://api.aime.team'.
             job_type (str): Type of job . Example: "stable_diffusion_xl_txt2img".
@@ -139,9 +160,9 @@ class APIWorkerInterface():
             world_size (int, optional): Number of used GPUs the worker runs on. Defaults to 1.
             rank (int, optional): ID of current GPU if world_size > 1. Defaults to 0.
             gpu_name (str, optional): Name of GPU the worker runs on. Defaults to None.
-
-            image_metadata_params (list, optional): Parameters to add as metadata to images (Currently only 'PNG'). Defaults to {DEFAULT_IMAGE_METADATA}
-
+            image_metadata_params (list, optional): Parameters to add as metadata to images (Currently only 'PNG'). Defaults to [
+                'prompt', 'negative_prompt', 'seed', ...]
+            print_server_status (bool, optional): Whether the server status is printed at start. Defaults to True
         """        
         self.api_server = api_server
         self.job_type = job_type
@@ -166,7 +187,7 @@ class APIWorkerInterface():
         In MultGPU-Mode (world_size > 1) only rank 0 will get job_data.
 
         Returns:
-            dict: job_data with worker [INPUT] parameters received from API server
+            dict: job_data with worker [INPUT] parameters received from API server.
         """
         job_data = None
         if self.rank == 0:
@@ -209,15 +230,21 @@ class APIWorkerInterface():
 
 
     def send_job_results(self, results, job_data=None):
-        """Process/convert job results and send it to API Server on route /worker_job_result
+        """Process/convert job results and send it to API Server on route /worker_job_result.
 
         Args:
-            results (dict): worker [OUTPUT] result parameters (f.i. 'image', 'images' or 'text')
-            Example results: {'images': [<PIL.Image.Image>, <PIL.Image.Image>, ...]}
+            results (dict): worker [OUTPUT] result parameters (f.i. 'image', 'images' or 'text').
+                Example results: ``{'images': [<PIL.Image.Image>, <PIL.Image.Image>, ...]}``
+            job_data (dict, optional): job_data received from job_request(), if an explicit change of job parameters is desired. 
+                Defaults to None.
 
         Returns:
-            requests.models.Response: Http response from API server to the worker, 
-            Example_response.json() : 
+            requests.models.Response: Http response from API server to the worker.
+
+        Examples:
+            .. code-block:: 
+                
+                Example response.json() : 
                 API Server received data without problems:          {'cmd': 'ok'} 
                 An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
                 API Server received data received with a warning:   {'cmd': 'warning', 'msg': <warning message>}
@@ -239,31 +266,49 @@ class APIWorkerInterface():
                     return
 
 
-    def send_progress(self, progress, progress_data=None, job_data=None, progress_received_callback=None, progress_error_callback=None):
-        """Processes/converts job progress information and data and sends it to API Server on route /worker_job_progress asynchronously to main thread.
-            When Api server received progress data, self.progress_data_received is set to True. 
-            Use progress_received_callback and progress_error_callback for response.
+    def send_progress(
+        self,
+        progress,
+        progress_data=None,
+        job_data=None,
+        progress_received_callback=None,
+        progress_error_callback=None
+        ):
+        """Processes/converts job progress information and data and sends it to API Server on route /worker_job_progress asynchronously 
+        to main thread using Pool().apply_async() from multiprocessing.dummy. When Api server received progress data, 
+        self.progress_data_received is set to True. Use progress_received_callback and progress_error_callback for response.
 
         Args:
             progress (int): current progress (f.i. percent or number of generated tokens)
-            progress_data (dict, optional): dictionary with progress_images or text while worker is computing. Defaults to None.
+            progress_data (dict, optional): dictionary with progress_images or text while worker is computing. 
+                Example progress data: :{'progress_images': [<PIL.Image.Image>, <PIL.Image.Image>, ...]}:. Defaults to None.
             progress_received_callback (function, optional): Callback function with API server response as argument. 
                 Called when progress_data is received. Defaults to None.
             progress_error_callback (function, optional): Callback function with requests.exceptions.ConnectionError or 
-            http response with status_code == 503 as argument. Called when API server replied with error. Defaults to None.
-            Example progress data: {'progress_images': [<PIL.Image.Image>, <PIL.Image.Image>, ...]}
+                http response with :status_code == 503: as argument. Called when API server replied with error. Defaults to None.
+            
         """
         if job_data:
             self.current_job_data = job_data
         if self.rank == 0:        
-            payload = {'progress': progress, 'job_id': self.current_job_data['job_id']}
+            payload = {
+                'progress': progress, 
+                'job_id': self.current_job_data['job_id'],
+                'start_time': self.current_job_data.get('start_time'),
+                'start_time_compute': self.current_job_data.get('start_time_compute')
+            }
             payload['progress_data'] = self.__prepare_output(progress_data, False)
             self.progress_data_received = False
 
             _ = self.__fetch_async('/worker_job_progress', payload, progress_received_callback, progress_error_callback)
 
 
-    def async_check_server_connection(self, check_server_callback=None, check_server_error_callback=None, terminal_output=True):
+    def async_check_server_connection(
+        self,
+        check_server_callback=None,
+        check_server_error_callback=None,
+        terminal_output=True
+        ):
         """Non blocking check of Api server status on route /worker_check_server_status using Pool().apply_async() from multiprocessing.dummy 
 
         Args:
@@ -284,7 +329,7 @@ class APIWorkerInterface():
 
 
     def check_periodically_if_server_online(self, interval_seconds=1):
-        f"""Checking periodically every interval_seconds={interval_seconds} if server is online by post requests on route /worker_check_server_status
+        """Checking periodically every interval_seconds=1 if server is online by post requests on route /worker_check_server_status.
 
         Args:
             interval_seconds (int): Interval in seconds to update check if server is online
@@ -360,7 +405,12 @@ class APIWorkerInterface():
         return worker_name
 
 
-    def __convert_output_types_to_string_representation(self, output_data, output_name, output_description):
+    def __convert_output_types_to_string_representation(
+        self,
+        output_data,
+        output_name,
+        output_description
+        ):
         """Converts parameters output data from type 'image' and 'image_list' to base64 strings. 
 
         Args:
@@ -381,7 +431,7 @@ class APIWorkerInterface():
 
 
     def __prepare_output(self, output_data, finished):
-        f"""Adds {SERVER_PARAMETERS} to output_data. Converts parameters in output data from type 'image' and 'image_list' to base64 strings. 
+        """Adds SERVER_PARAMETERS to output_data. Converts parameters in output data from type 'image' and 'image_list' to base64 strings. 
         Adds [OUTPUT] parameters found in job_data[output_description/progress_description] to output_data
 
         Args:
@@ -437,7 +487,7 @@ class APIWorkerInterface():
         Returns:
             str: base64 string of images
         """        
-        image_64 = ''.join(self.__convert_image_to_base64_string(image, image_format) for image in list_images)
+        image_64 = '$SEP$'.join(self.__convert_image_to_base64_string(image, image_format) for image in list_images)
         return image_64
 
 
@@ -517,7 +567,9 @@ class APIWorkerInterface():
             json (dict, optional): Arguments for post request
 
         Returns:
-            Response: post request response from API server
+            requests.models.Response: post request response from API server
+            
+        Examples:
             Example_response.json() on routes /check_server_status and /worker_job_request: 
                 API Server received data without problems:          {'cmd': 'ok'} 
                 An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
@@ -526,7 +578,13 @@ class APIWorkerInterface():
         return requests.post(self.api_server + route, json=json)
 
 
-    def __fetch_async(self, route, json=None, callback=None, error_callback=None):
+    def __fetch_async(
+        self,
+        route,
+        json=None,
+        callback=None,
+        error_callback=None
+        ):
         """Sends non-blocking post request on given route on API server with given arguments. Returns None. Response 
         in __async_fetch_callback or __async_fetch_error_callback.
 
@@ -547,7 +605,9 @@ class APIWorkerInterface():
         Sets progress_data_received = True and calls progress_received_callback, if given to ApiWorkerInterface
 
         Args:
-            response (requests.models.Response): Http response from API server, 
+            response (requests.models.Response): Http response from API server.
+
+        Examples:
             Example_response.json() on routes /check_server_status and /worker_job_request: 
                 API Server received data without problems:          {'cmd': 'ok'} 
                 An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
