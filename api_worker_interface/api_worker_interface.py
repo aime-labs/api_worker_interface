@@ -1,5 +1,4 @@
 
-import os
 import time
 from datetime import datetime, timedelta
 
@@ -13,6 +12,7 @@ import io
 
 import base64
 from PIL.PngImagePlugin import PngInfo
+import pkg_resources
 
 
 SYNC_MANAGER_BASE_PORT  =  10042
@@ -30,7 +30,7 @@ class MyManager(SyncManager):
 
 
 class APIWorkerInterface():
-    """Interface for deep learning models to communicate with AIME-ML-API
+    """Interface for deep learning models to communicate with AIME-ML-API.
 
     Args:
         api_server (str): Address of API Server. Example: 'http://api.aime.team'.
@@ -40,9 +40,9 @@ class APIWorkerInterface():
         world_size (int, optional): Number of used GPUs the worker runs on. Defaults to 1.
         rank (int, optional): ID of current GPU if world_size > 1. Defaults to 0.
         gpu_name (str, optional): Name of GPU the worker runs on. Defaults to None.
-        progress_received_callback (function, optional): Callback function with http response as argument, 
+        progress_received_callback (callable, optional): Callback function with http response as argument, 
             called when API server sent response to send_progress(..). Defaults to None.
-        progress_error_callback (function, optional): Callback function with requests.exceptions.ConnectionError as argument, 
+        progress_error_callback (callable, optional): Callback function with requests.exceptions.ConnectionError as argument, 
             called when API server didn't send response from send_progress(..). Defaults to None.
         image_metadata_params (list, optional): Parameters to add as metadata to images (Currently only 'PNG'). 
             Defaults to ['prompt', 'negative_prompt', 'seed', ...].
@@ -134,7 +134,6 @@ class APIWorkerInterface():
                 do_deep_learning_worker_calculation(job_data, callback.result_callback, callback.progress_callback, ...)
         
     """
-
     manager = None
     barrier = None
 
@@ -194,7 +193,12 @@ class APIWorkerInterface():
             have_job = False
             counter = 0
             while not have_job:
-                request = { "auth": self.worker_name, "job_type": self.job_type, "auth_key": self.auth_key }
+                request = {
+                    'auth': self.worker_name,
+                    'job_type': self.job_type,
+                    'auth_key': self.auth_key,
+                    'version': self.get_version()
+                }
                 try:
                     response = self.__fetch('/worker_job_request', request)
                     if response.status_code == 503:
@@ -205,7 +209,11 @@ class APIWorkerInterface():
                     continue
                 response_output_str = '! API server responded with {cmd}: {msg}'
                 if response.status_code == 200:
-                    job_data = response.json()
+                    try:
+                        job_data = response.json()
+                    except requests.exceptions.JSONDecodeError:
+                        raise 
+                        
                     
                     cmd = job_data.get('cmd')
                     msg = job_data.get('msg', 'unknown')
@@ -282,9 +290,9 @@ class APIWorkerInterface():
             progress (int): current progress (f.i. percent or number of generated tokens)
             progress_data (dict, optional): dictionary with progress_images or text while worker is computing. 
                 Example progress data: :{'progress_images': [<PIL.Image.Image>, <PIL.Image.Image>, ...]}:. Defaults to None.
-            progress_received_callback (function, optional): Callback function with API server response as argument. 
+            progress_received_callback (callable, optional): Callback function with API server response as argument. 
                 Called when progress_data is received. Defaults to None.
-            progress_error_callback (function, optional): Callback function with requests.exceptions.ConnectionError or 
+            progress_error_callback (callable, optional): Callback function with requests.exceptions.ConnectionError or 
                 http response with :status_code == 503: as argument. Called when API server replied with error. Defaults to None.
             
         """
@@ -312,9 +320,9 @@ class APIWorkerInterface():
         """Non blocking check of Api server status on route /worker_check_server_status using Pool().apply_async() from multiprocessing.dummy 
 
         Args:
-            check_server_callback (callback, optional): Callback function with with API server response as argument. 
+            check_server_callback (callable, optional): Callback function with with API server response as argument. 
                 Called after a successful server check. Defaults to None.
-            check_server_error_callback (callback, optional): Callback function with requests.exceptions.ConnectionError as argument
+            check_server_error_callback (callable, optional): Callback function with requests.exceptions.ConnectionError as argument
                 Called when server replied with error. Defaults to None.
             terminal_output (bool, optional): Prints server status to terminal if True. Defaults to True.
         """        
@@ -487,7 +495,7 @@ class APIWorkerInterface():
         Returns:
             str: base64 string of images
         """        
-        image_64 = '$SEP$'.join(self.__convert_image_to_base64_string(image, image_format) for image in list_images)
+        image_64 = [self.__convert_image_to_base64_string(image, image_format) for image in list_images]
         return image_64
 
 
@@ -521,7 +529,7 @@ class APIWorkerInterface():
 
 
     def __print_server_status(self, response):
-        """Prints server status. Called at start of worker.
+        """Prints server status to the terminal. Called at start of worker if self.print_server_status is True.
 
         Args:
             response (requests.models.Response or requests.exceptions.ConnectionError): 
@@ -600,18 +608,22 @@ class APIWorkerInterface():
         pool.apply_async(self.__fetch, args=[route, json], callback=self.__async_fetch_callback, error_callback=self.__async_fetch_error_callback)
         pool.close()
 
+
     def __async_fetch_callback(self, response):
         """Is called when API server sent a response from __fetch_async. 
-        Sets progress_data_received = True and calls progress_received_callback, if given to ApiWorkerInterface
+        Sets progress_data_received = True and calls __custom_callback, if given to ApiWorkerInterface
 
         Args:
             response (requests.models.Response): Http response from API server.
 
         Examples:
-            Example_response.json() on routes /check_server_status and /worker_job_request: 
-                API Server received data without problems:          {'cmd': 'ok'} 
-                An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
-                API Server received data with a warning:   {'cmd': 'warning', 'msg': <warning message>}
+            Example_response.json() on routes /check_server_status and /worker_job_request:
+
+            .. code-block::
+
+                API Server received data without problems:      {'cmd': 'ok'} 
+                An error occured in API server:                 {'cmd': 'error', 'msg': <error message>} 
+                API Server received data with a warning:        {'cmd': 'warning', 'msg': <warning message>}
         """
         self.progress_data_received = True     
         if self.print_server_status:
@@ -635,3 +647,17 @@ class APIWorkerInterface():
         else:
             if self.__custom_error_callback:
                 self.__custom_error_callback(error)
+
+
+    @staticmethod
+    def get_version():
+        """Parses name and version of API Worker Interface with pkg_resources
+
+        Returns:
+            str: Name and version of API Worker Interface
+        """        
+        try:
+            version = str(pkg_resources.get_distribution("api_worker_interface"))
+        except pkg_resources.DistributionNotFound:
+            version = 'API Worker Interface Unknown version, package api_worker_interface not installed via pip'
+        return version
