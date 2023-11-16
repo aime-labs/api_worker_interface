@@ -12,12 +12,14 @@ import io
 
 import base64
 from PIL.PngImagePlugin import PngInfo
+import json
 import pkg_resources
+
 
 
 SYNC_MANAGER_BASE_PORT  =  10042
 SYNC_MANAGER_AUTH_KEY   = b"aime_api_worker"
-SERVER_PARAMETERS = ['job_id', 'start_time', 'start_time_compute', 'auth']
+SERVER_PARAMETERS = ['job_id', 'start_time', 'start_time_compute', 'auth', 'version']
 DEFAULT_IMAGE_METADATA = [
     'prompt', 'negative_prompt', 'seed', 'base_steps', 'refine_steps', 'scale', 
     'aesthetic_score', 'negative_aesthetic_score', 'img2img_strength', 'base_sampler', 
@@ -250,9 +252,10 @@ class APIWorkerInterface():
             requests.models.Response: Http response from API server to the worker.
 
         Examples:
+            Example response.json(): 
+            
             .. code-block:: 
-                
-                Example response.json() : 
+
                 API Server received data without problems:          {'cmd': 'ok'} 
                 An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
                 API Server received data received with a warning:   {'cmd': 'warning', 'msg': <warning message>}
@@ -381,6 +384,13 @@ class APIWorkerInterface():
         
         return metadata
 
+    def get_exif_metadata(self, image):
+        metadata = {str(parameter_name): self.current_job_data.get(parameter_name) for parameter_name in DEFAULT_IMAGE_METADATA}
+        metadata['Generated with:'] = 'AIME ML API'
+        exif = image.getexif()
+        exif[0x9286] = json.dumps(metadata)
+        return exif
+
 
     def __init_manager_and_barrier(self):
         """Register barrier in MyManager, initialize MyManager and assign them to APIWorkerInterface.barrier and APIWorkerInterface.manager
@@ -430,12 +440,21 @@ class APIWorkerInterface():
         """
         if output_name in output_data:
             output_type = output_description.get('type') 
+            image_format = output_description.get('image_format', 'JPEG')
+            color_space = output_description.get('color_space', 'RGB')
+
             if output_type == 'image':
                 output_data[output_name] = self.__convert_image_to_base64_string(
-                    output_data[output_name], output_description.get('image_format', 'PNG'))
+                    output_data[output_name], 
+                    image_format, 
+                    color_space
+                )
             elif output_type == 'image_list':
                 output_data[output_name] = self.__convert_image_list_to_base64_string(
-                    output_data[output_name], output_description.get('image_format', 'PNG'))
+                    output_data[output_name], 
+                    image_format,
+                    color_space
+                )
 
 
     def __prepare_output(self, output_data, finished):
@@ -465,7 +484,7 @@ class APIWorkerInterface():
         return output_data
 
 
-    def __convert_image_to_base64_string(self, image, image_format):
+    def __convert_image_to_base64_string(self, image, image_format, color_space):
         """Converts given PIL image to base64 string with given image_format and image metadata parsed from current_job_data.
 
         Args:
@@ -475,9 +494,15 @@ class APIWorkerInterface():
         Returns:
             str: base64 string of image
         """
+        image = image.convert(color_space)
         with io.BytesIO() as buffer:
             if image_format == 'PNG':
                 image.save(buffer, format=image_format, pnginfo=self.get_pnginfo_metadata())
+
+            elif image_format =='JPEG' or image_format == 'JPG':
+                image_format = 'JPEG'
+                exif = self.get_exif_metadata(image)
+                image.save(buffer, format=image_format, exif=exif)
             else:
                 image.save(buffer, format=image_format)
             
@@ -485,7 +510,7 @@ class APIWorkerInterface():
         return image_64
 
 
-    def __convert_image_list_to_base64_string(self, list_images, image_format):
+    def __convert_image_list_to_base64_string(self, list_images, image_format, color_space):
         """Converts given list of PIL images to base64 string with given image_format and image metadata parsed from current_job_data.
 
         Args:
@@ -495,7 +520,7 @@ class APIWorkerInterface():
         Returns:
             str: base64 string of images
         """        
-        image_64 = [self.__convert_image_to_base64_string(image, image_format) for image in list_images]
+        image_64 = [self.__convert_image_to_base64_string(image, image_format, color_space) for image in list_images]
         return image_64
 
 
