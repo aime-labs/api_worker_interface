@@ -19,7 +19,7 @@ import pkg_resources
 
 SYNC_MANAGER_BASE_PORT  =  10042
 SYNC_MANAGER_AUTH_KEY   = b"aime_api_worker"
-SERVER_PARAMETERS = ['job_id', 'start_time', 'start_time_compute', 'auth', 'version']
+SERVER_PARAMETERS = ['job_id', 'start_time', 'start_time_compute']
 DEFAULT_IMAGE_METADATA = [
     'prompt', 'negative_prompt', 'seed', 'base_steps', 'refine_steps', 'scale', 
     'aesthetic_score', 'negative_aesthetic_score', 'img2img_strength', 'base_sampler', 
@@ -52,7 +52,6 @@ class APIWorkerInterface():
     Attributes:
         progress_data_received (bool): True, if API server sent response to send_progress(), 
             False while progress data is being transmitted or if an error occured.
-        current_job_data (dict): current job_data received from API server via job_request().
 
     Examples:
         Example usage simple:
@@ -178,19 +177,53 @@ class APIWorkerInterface():
         self.worker_name = self.__make_worker_name()
         self.__init_manager_and_barrier()
         self.progress_data_received = True
-        self.current_job_data = dict()
+        self.__current_job_data = dict()
         self.print_server_status = print_server_status
         self.async_check_server_connection(terminal_output = print_server_status)
+        self.request_timeout = 70
+        self.version = self.get_version()
 
 
     def job_request(self):
-        """Worker requests a job from API Server on route /worker_job_request. 
+        """Worker requests a job from API Server on route /worker_job_request. If there is 
+        no client job offer within the job_timeout the responds with 'cmd':'no_job' and the 
+        worker asks requests a job again on route /worker_job_request. 
         In MultGPU-Mode (world_size > 1) only rank 0 will get job_data.
 
         Returns:
-            dict: job_data with worker [INPUT] parameters received from API server.
+            dict: Job data with worker [INPUT] parameters received from API server.
+
+        Examples:
+
+            Example job data:
+
+            .. highlight:: python
+            .. code-block:: python
+
+                job_data = {
+                    'prompt': 'prompt',
+                    'wait_for_result': False,
+                    'job_id': 'JID1',
+                    'endpoint_name': 'stable_diffusion_xl_txt2img',
+                    'start_time': 1700430052.505548,
+                    'start_time_compute': 1700430052.5124364},
+                    'cmd': 'job',
+                    'job_timeout': 60,
+                    'progress_descriptions': {
+                        'progress_images': {
+                            'type': 'image_list', 'image_format': 'JPEG', 'color_space': 'RGB'
+                        }
+                    }, 
+                    'output_descriptions': {
+                        'images': {'type': 'image_list', 'image_format': 'JPEG', 'color_space': 'RGB'},
+                        'seed': {'type': 'integer'},
+                        'prompt': {'type': 'string'},
+                        'error': {'type': 'string'}
+                    }
+                }
+
         """
-        job_data = None
+        job_data = dict()
         if self.rank == 0:
             have_job = False
             counter = 0
@@ -199,7 +232,7 @@ class APIWorkerInterface():
                     'auth': self.worker_name,
                     'job_type': self.job_type,
                     'auth_key': self.auth_key,
-                    'version': self.get_version()
+                    'version': self.version
                 }
                 try:
                     response = self.__fetch('/worker_job_request', request)
@@ -211,16 +244,14 @@ class APIWorkerInterface():
                     continue
                 response_output_str = '! API server responded with {cmd}: {msg}'
                 if response.status_code == 200:
-                    try:
-                        job_data = response.json()
-                    except requests.exceptions.JSONDecodeError:
-                        raise 
-                        
-                    
+                    job_data = response.json() 
+                    self.request_timeout = job_data.get('job_timeout', 60) + 10
                     cmd = job_data.get('cmd')
                     msg = job_data.get('msg', 'unknown')
                     if cmd == 'job':
                         have_job = True
+                    elif cmd == 'no_job':
+                        continue
                     elif cmd == 'error':
                         exit(response_output_str.format(cmd=cmd, msg=msg))
                     elif cmd == 'warning':
@@ -235,7 +266,8 @@ class APIWorkerInterface():
         if self.world_size > 1:
             # hold all GPU processes here until we have a new job                     
             APIWorkerInterface.barrier.wait()
-        self.current_job_data = job_data
+        self.__current_job_data = job_data
+
         return job_data
 
 
@@ -261,7 +293,7 @@ class APIWorkerInterface():
                 API Server received data received with a warning:   {'cmd': 'warning', 'msg': <warning message>}
         """
         if job_data:
-            self.current_job_data = job_data
+            self.__current_job_data.update(job_data)
         if self.rank == 0:        
             results = self.__prepare_output(results, True)
             while True:
@@ -299,18 +331,19 @@ class APIWorkerInterface():
                 http response with :status_code == 503: as argument. Called when API server replied with error. Defaults to None.
             
         """
-        if job_data:
-            self.current_job_data = job_data
-        if self.rank == 0:        
-            payload = {
-                'progress': progress, 
-                'job_id': self.current_job_data['job_id'],
-                'start_time': self.current_job_data.get('start_time'),
-                'start_time_compute': self.current_job_data.get('start_time_compute')
-            }
-            payload['progress_data'] = self.__prepare_output(progress_data, False)
+        
+        if job_data: 
+            self.__current_job_data.update(job_data) 
+        if self.rank == 0 and not self.__current_job_data.pop('wait_for_result', False):
+            
+            payload = {parameter: self.__current_job_data[parameter] for parameter in SERVER_PARAMETERS}
+            payload.update(
+                {
+                    'progress': progress, 
+                    'progress_data': self.__prepare_output(progress_data, False)
+                }
+            )
             self.progress_data_received = False
-
             _ = self.__fetch_async('/worker_job_progress', payload, progress_received_callback, progress_error_callback)
 
 
@@ -370,14 +403,14 @@ class APIWorkerInterface():
 
 
     def get_pnginfo_metadata(self):
-        """Parses and returns image metadata from current_job_data.
+        """Parses and returns image metadata from job_data.
 
         Returns:
             PIL.PngImagePlugin.PngInfo: PngInfo Object with metadata for PNG images
         """        
         metadata = PngInfo()
         for parameter_name in self.image_metadata_params:
-            parameter = self.current_job_data.get(parameter_name)
+            parameter = self.__current_job_data.get(parameter_name)
             if parameter:
                 metadata.add_text(parameter_name, str(parameter))
         metadata.add_text('Comment', 'Generated with AIME ML API')
@@ -385,7 +418,7 @@ class APIWorkerInterface():
         return metadata
 
     def get_exif_metadata(self, image):
-        metadata = {str(parameter_name): self.current_job_data.get(parameter_name) for parameter_name in DEFAULT_IMAGE_METADATA}
+        metadata = {str(parameter_name): self.__current_job_data.get(parameter_name) for parameter_name in DEFAULT_IMAGE_METADATA}
         metadata['Generated with:'] = 'AIME ML API'
         exif = image.getexif()
         exif[0x9286] = json.dumps(metadata)
@@ -471,21 +504,27 @@ class APIWorkerInterface():
         
         if output_data:
             output_data = output_data.copy()
+            output_data['version'] = self.version
+            output_data['auth'] = self.worker_name
             if finished:
                 for parameter in SERVER_PARAMETERS:
-                    output_data[parameter] = self.current_job_data.get(parameter)
-            mode = 'output' if finished else 'progress'
-            descriptions = self.current_job_data.get(f'{mode}_descriptions')
+                    output_data[parameter] = self.__current_job_data.get(parameter)
+                output_data['job_type'] = self.job_type
+                mode = 'output'
+
+            else:
+                mode = 'progress'
+            descriptions = self.__current_job_data.get(f'{mode}_descriptions')
             for output_name, output_description in descriptions.items():
                 self.__convert_output_types_to_string_representation(output_data, output_name, output_description)
                 if finished:
-                    if output_name in self.current_job_data and output_name not in output_data:
-                        output_data[output_name] = self.current_job_data[output_name]
+                    if output_name in self.__current_job_data and output_name not in output_data:
+                        output_data[output_name] = self.__current_job_data[output_name]
         return output_data
 
 
     def __convert_image_to_base64_string(self, image, image_format, color_space):
-        """Converts given PIL image to base64 string with given image_format and image metadata parsed from current_job_data.
+        """Converts given PIL image to base64 string with given image_format and image metadata parsed from __current_job_data.
 
         Args:
             image (PIL.PngImagePlugin.PngImageFile): Python pillow image to be converted
@@ -511,7 +550,7 @@ class APIWorkerInterface():
 
 
     def __convert_image_list_to_base64_string(self, list_images, image_format, color_space):
-        """Converts given list of PIL images to base64 string with given image_format and image metadata parsed from current_job_data.
+        """Converts given list of PIL images to base64 string with given image_format and image metadata parsed from __current_job_data.
 
         Args:
             list_images (list [PIL.PngImagePlugin.PngImageFile, ..]): List of python pillow images to be converted
@@ -607,8 +646,13 @@ class APIWorkerInterface():
                 API Server received data without problems:          {'cmd': 'ok'} 
                 An error occured in API server:                     {'cmd': 'error', 'msg': <error message>} 
                 API Server received data with a warning:   {'cmd': 'warning', 'msg': <warning message>}
-        """        
-        return requests.post(self.api_server + route, json=json)
+        """
+        try:
+            response = requests.post(self.api_server + route, json=json, timeout=self.request_timeout)
+        except requests.Timeout:
+            raise requests.exceptions.ConnectionError
+
+        return response
 
 
     def __fetch_async(

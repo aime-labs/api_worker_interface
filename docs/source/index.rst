@@ -1,20 +1,32 @@
-.. API Worker Interface documentation master file, created by
-   sphinx-quickstart on Sat Nov 11 21:59:49 2023.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
 
-Welcome to API Worker Interface's documentation!
-================================================
+API Worker Interface
+====================
+
+
+**Setup:**
+
+   .. include:: setup.txt
+
+**Examples**
+
+.. include:: ../../api_worker_interface/api_worker_interface.py
+   :start-after: Examples:
+   :end-before: """
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :maxdepth: 6
+   :hidden:
+   
+   Setup <setup>
+   Documentation <api_worker_interface>
+   Examples <examples>
 
-   modules
 
-Indices and tables
-==================
 
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+.. note::
+
+   This project is under active development.
+
+
+
+

@@ -1,5 +1,8 @@
+﻿
+Documentation API Worker Interface
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: api_worker_interface.APIWorkerInterface
-   :members:
-   :undoc-members:
-   :show-inheritance:
+   :members: 
+   :member-order: bysource
+
