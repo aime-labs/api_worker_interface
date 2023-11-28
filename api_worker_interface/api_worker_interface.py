@@ -148,7 +148,8 @@ class APIWorkerInterface():
         rank=0, 
         gpu_name=None, 
         image_metadata_params=DEFAULT_IMAGE_METADATA,
-        print_server_status = True
+        print_server_status = True,
+        request_timeout = 60
         ):
         """Constructor
 
@@ -180,14 +181,14 @@ class APIWorkerInterface():
         self.__current_job_data = dict()
         self.print_server_status = print_server_status
         self.async_check_server_connection(terminal_output = print_server_status)
-        self.request_timeout = 70
+        self.request_timeout = request_timeout
         self.version = self.get_version()
 
 
     def job_request(self):
         """Worker requests a job from API Server on route /worker_job_request. If there is 
-        no client job offer within the job_timeout the responds with 'cmd':'no_job' and the 
-        worker asks requests a job again on route /worker_job_request. 
+        no client job offer within the job_timeout = request_timeout * 0.9 the API server responds with 'cmd':'no_job' and the 
+        worker requests a job again on route /worker_job_request. 
         In MultGPU-Mode (world_size > 1) only rank 0 will get job_data.
 
         Returns:
@@ -208,7 +209,6 @@ class APIWorkerInterface():
                     'start_time': 1700430052.505548,
                     'start_time_compute': 1700430052.5124364},
                     'cmd': 'job',
-                    'job_timeout': 60,
                     'progress_descriptions': {
                         'progress_images': {
                             'type': 'image_list', 'image_format': 'JPEG', 'color_space': 'RGB'
@@ -221,7 +221,6 @@ class APIWorkerInterface():
                         'error': {'type': 'string'}
                     }
                 }
-
         """
         job_data = dict()
         if self.rank == 0:
@@ -232,7 +231,8 @@ class APIWorkerInterface():
                     'auth': self.worker_name,
                     'job_type': self.job_type,
                     'auth_key': self.auth_key,
-                    'version': self.version
+                    'version': self.version,
+                    'request_timeout': self.request_timeout
                 }
                 try:
                     response = self.__fetch('/worker_job_request', request)
@@ -245,7 +245,6 @@ class APIWorkerInterface():
                 response_output_str = '! API server responded with {cmd}: {msg}'
                 if response.status_code == 200:
                     job_data = response.json() 
-                    self.request_timeout = job_data.get('job_timeout', 60) + 10
                     cmd = job_data.get('cmd')
                     msg = job_data.get('msg', 'unknown')
                     if cmd == 'job':
